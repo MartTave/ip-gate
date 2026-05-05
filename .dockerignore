@@ -1,0 +1,16 @@
+# Binaries
+ttl-allow-service
+
+# Go
+go.sum
+vendor/
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Docs
+*.md
+
+# Misc
+.git/

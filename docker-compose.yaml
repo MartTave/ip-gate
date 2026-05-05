@@ -1,0 +1,9 @@
+services:
+  caddy:
+    image: caddy:2.11.2-alpine
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    network_mode: host
+  ttl_whitelist:
+    image: marttave/ttl_whitelist:latest
+    network_mode: host

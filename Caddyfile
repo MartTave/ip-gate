@@ -1,0 +1,18 @@
+http://localhost:8090 {
+  @untrusted {
+    not remote_ip 192.168.0.0/16
+  }
+
+  handle /test {
+    forward_auth @untrusted localhost:8080 {
+      uri /auth
+      copy_headers X-Forwarded-For
+    }
+    respond "Hello !" 200
+  }
+
+
+  handle {
+    respond "Hellooooo !" 200
+  }
+}

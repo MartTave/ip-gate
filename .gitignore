@@ -1,0 +1,15 @@
+# Binary
+ttl-allow-service
+
+# Go
+*.mod
+*.sum
+vendor/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Misc
+.DS_Store
