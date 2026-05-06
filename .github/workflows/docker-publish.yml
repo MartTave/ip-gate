@@ -6,7 +6,7 @@ on:
     tags: ["v*"]
 
 env:
-  DOCKER_IMAGE: marttave/ip-gate
+  DOCKER_IMAGE: polypode/ip-gate:latest
 
 jobs:
   build-and-push:
