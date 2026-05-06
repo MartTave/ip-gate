@@ -6,7 +6,8 @@ on:
     tags: ["v*"]
 
 env:
-  DOCKER_IMAGE: polypode/ip-gate:latest
+  DOCKER_IMAGE: polypode/ip-gate
+  DOCKER_TAG: latest
 
 jobs:
   build-and-push:
