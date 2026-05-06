@@ -20,6 +20,7 @@ func main() {
 	go worker.StartBackgroundWorker()
 
 	// Setup routes
+	http.HandleFunc("/health", handler.HealthHandler)
 	http.HandleFunc("/knock", handler.KnockHandler)
 	http.HandleFunc("/allow", handler.AllowHandler)
 	http.HandleFunc("/auth", handler.AuthHandler)

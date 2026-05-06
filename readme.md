@@ -1,344 +1,164 @@
-# TTL IP Allow Service (Go + Caddy Integration) — Implementation Plan
+# TTL IP Allow Service
 
-## 1. Goal
+A lightweight Go service for managing temporary IP-based access control, designed to work with Caddy's `auth_request` module. Provides a simple knock endpoint for clients, an admin interface for approving requests with configurable TTL, and an auth endpoint for Caddy to query access decisions.
 
-Build a minimal Go service that:
+## Concept
 
-- Keeps an in-memory list of IP access requests
-- Provides TTL-based "knock" requests
-- Allows admin approval with selectable TTL durations
-- Provides `/auth` endpoint for Caddy to check IP allow status
-- Resets all state on startup (fail-safe deny-by-default)
-- Includes rate limiting for `/knock`
-- Uses minimal/no external libraries (prefer standard library only)
+This service implements a "knock-to-request" pattern:
 
----
+1. **Client requests access** - Hits `/knock` endpoint (rate-limited)
+2. **Request appears in admin panel** - Visible at `/allow` interface
+3. **Admin approves** - Selects TTL duration, IP gets added to allowlist
+4. **Caddy queries auth endpoint** - `/auth` returns 200/403 based on IP allow status
+5. **Auto-expiry** - Per-IP timers remove entries when TTL expires
 
-## 2. High-Level Architecture
+All state is in-memory; restarts clear everything (fail-safe deny-by-default).
 
-```
-
-Client (hotel / device)
-|
-v
-/knock endpoint
-|
-In-memory request store
-|
-Admin panel (/allow)
-|
-Select TTL + approve
-|
-Approved IPs store  <------ /auth endpoint (queried by Caddy)
-                                      |
-                                      v
-                                  Caddy enforces access
-```
-
----
-
-## 3. Key Design Principles
-
-- Fail-safe: default = NO IP allowed
-- No persistence (memory only)
-- Restart wipes all state
-- TTL-based approval system
-- Simple HTTP JSON API
-- Minimal dependencies
-- External auth handled by reverse proxy (e.g. Authelia)
-
----
-
-## 4. Environment Variables
+## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `REQUEST_TTL_MINUTES` | Default knock request TTL | 5 |
-| `RATE_LIMIT_WINDOW_SEC` | Rate limit window | 60 |
-| `RATE_LIMIT_MAX_REQUESTS` | Max knock requests per window | 3 |
-| `PORT` | HTTP server port | 8080 |
+| `MAX_TTL` | Maximum allowed TTL for approvals (generates dropdown options) | `48h` |
+| `REQUEST_TTL_MINUTES` | How long knock requests stay pending | `5` |
+| `RATE_LIMIT_WINDOW_SEC` | Rate limit window for `/knock` | `60` |
+| `RATE_LIMIT_MAX_REQUESTS` | Max knock requests per window per IP | `3` |
+| `PORT` | HTTP server port | `8080` |
+| `WORKER_INTERVAL_MINUTES` | Background cleanup worker interval | `5` |
 
----
+### TTL Options
 
-## 5. Data Structures
+The service dynamically generates TTL options based on `MAX_TTL`:
+- Options: 5m, 10m, 20m, 40m, 1h, 2h, 4h, 8h, 12h, 24h, 48h
+- Options exceeding `MAX_TTL` are filtered out
+- Default `MAX_TTL=48h` shows all 11 options
 
-### 5.1 Knock Request
+## Endpoints
 
-```go
-type KnockRequest struct {
-    IP          string
-    RequestedAt time.Time
-    ExpiresAt   time.Time
-}
-````
+### `GET /health`
+Health check endpoint. Returns HTTP 200.
 
----
-
-### 5.2 Approved IP
-
-```go
-type ApprovedIP struct {
-    IP        string
-    ExpiresAt time.Time
-}
+```bash
+curl http://localhost:8080/health
 ```
 
----
+### `GET /knock`
+Request temporary access. Extracts client IP, applies rate limiting.
 
-### 5.3 Global State
+**Responses:**
+- `200 already allowed` - IP is already approved
+- `200 request received` - Knock request created
+- `200 already requested` - Pending request exists
+- `429 Too Many Requests` - Rate limit exceeded
 
-Located in `src/internal/store/store.go`:
-
-```go
-var (
-    knockRequests = make(map[string]KnockRequest)
-    approvedIPs   = make(map[string]ApprovedIP)
-    rateLimiter   = make(map[string][]time.Time)
-    mu            sync.Mutex
-)
+```bash
+curl http://localhost:8080/knock
 ```
 
----
+### `GET /allow`
+Admin panel - displays pending requests and approved IPs.
 
-## 6. Startup Behavior
+- **Browser:** Returns HTML GUI with AJAX-based actions
+- **API:** Returns JSON when `Accept: application/json` header present
 
-On startup:
+```bash
+# GUI
+curl http://localhost:8080/allow
 
-1. Initialize in-memory state
-2. Clear all stored data (deny-by-default safety)
-3. Start background cleanup goroutine:
-   * remove expired knock requests
-   * remove expired approvals
-
----
-
-## 7. Routes
-
----
-
-## 7.1 `/knock` (public)
-
-### Purpose
-
-Request temporary access.
-
-### Behavior
-
-* Extract client IP
-* Apply rate limiting
-* If IP already has pending request → return `"already requested"`
-* Otherwise:
-
-  * create KnockRequest
-  * store in memory
-* Return simple response:
-
-  * `"request received"`
-
----
-
-## 7.2 `/allow` (admin panel)
-
-### Purpose
-
-Review and manage IP requests + approvals.
-
----
-
-### GET `/allow`
-
-Returns:
-
-```json
-{
-  "pending": [
-    {
-      "ip": "1.2.3.4",
-      "requested_at": "...",
-      "expires_at": "..."
-    }
-  ],
-  "approved": [
-    {
-      "ip": "1.2.3.4",
-      "expires_at": "..."
-    }
-  ]
-}
+# JSON API
+curl -H "Accept: application/json" http://localhost:8080/allow
 ```
 
-Optional enhancement:
+### `POST /allow`
+Approve, deny, or revoke IPs (JSON or form-encoded).
 
-* include external IP lookup links:
-
-  * ipinfo.io
-  * abuseipdb.com
-  * ip-api.com
-
----
-
-### POST `/allow`
-
-#### Action: approve IP with TTL
-
-```json
-{
-  "ip": "1.2.3.4",
-  "action": "allow",
-  "ttl": "30m"
-}
+**Approve IP:**
+```bash
+curl -X POST http://localhost:8080/allow \
+  -H "Content-Type: application/json" \
+  -d '{"ip":"1.2.3.4","action":"allow","ttl":"1h"}'
 ```
 
-#### Action: deny IP
-
-```json
-{
-  "ip": "1.2.3.4",
-  "action": "deny"
-}
+**Deny request:**
+```bash
+curl -X POST http://localhost:8080/allow \
+  -H "Content-Type: application/json" \
+  -d '{"ip":"1.2.3.4","action":"deny"}'
 ```
 
----
-
-## 8. TTL Options (IMPORTANT UPDATE)
-
-Admin can choose from predefined TTL values:
-
-### Allowed TTL values
-
-| Label | Duration   |
-| ----- | ---------- |
-| 5m    | 5 minutes  |
-| 30m   | 30 minutes |
-| 1h    | 1 hour     |
-| 2h    | 2 hours    |
-| 5h    | 5 hours    |
-| 12h   | 12 hours   |
-| 24h   | 24 hours   |
-
----
-
-### Implementation rule
-
-* validate TTL against allowed list
-* reject invalid values
-* convert to `time.Duration`
-
-Example:
-
-```go
-var allowedTTLs = map[string]time.Duration{
-    "5m":  5 * time.Minute,
-    "30m": 30 * time.Minute,
-    "1h":  1 * time.Hour,
-    "2h":  2 * time.Hour,
-    "5h":  5 * time.Hour,
-    "12h": 12 * time.Hour,
-    "24h": 24 * time.Hour,
-}
+**Revoke approval:**
+```bash
+curl -X POST http://localhost:8080/allow \
+  -H "Content-Type: application/json" \
+  -d '{"ip":"1.2.3.4","action":"revoke"}'
 ```
 
----
+### `GET /auth`
+Auth endpoint for Caddy. Returns 200 if IP is allowed, 403 otherwise.
 
-## 9. Rate Limiting (/knock only)
-
-* per IP
-* sliding window using timestamps
-* configurable:
-
-| Setting      | Default |
-| ------------ | ------- |
-| window       | 60s     |
-| max requests | 3       |
-
-If exceeded:
-
-* return `429 Too Many Requests`
-
----
-
-## 10. Caddy Integration Strategy
-
-### Auth Endpoint Approach
-
-* Caddy uses `auth_request` module to query `/auth` endpoint
-* `/auth` checks in-memory approved IPs and returns:
-  * `200 OK` - IP is allowed
-  * `403 Forbidden` - IP is not allowed
-
-### Caddy Configuration Example
-
+```bash
+curl http://localhost:8080/auth
 ```
-# In Caddyfile
+
+## Caddy Integration
+
+Use Caddy's `auth_request` module to protect routes:
+
+```caddy
 example.com {
-    auth_request /auth {
+    # Protect everything except the knock endpoint
+    @protected not path /knock
+    auth_request @protected /auth {
         uri http://localhost:8080/auth
         copy_headers X-Forwarded-For
     }
-    # Your protected app
+
+    # Public knock endpoint
+    handle_path /knock {
+        reverse_proxy localhost:8080
+    }
+
+    # Your protected application
     reverse_proxy localhost:3000
+}
+
+# Admin panel (protect with additional auth like Authelia)
+admin.example.com {
+    # External authentication (recommended)
+    forward_auth authelia:9091 {
+        uri /api/verify?rd=https://login.example.com/
+        copy_headers Remote-User Remote-Groups Remote-Name Remote-Email
+    }
+
+    reverse_proxy localhost:8080
 }
 ```
 
-### Startup safety
+### How it works:
+1. Client requests `example.com/protected-page`
+2. Caddy forwards client IP to `/auth` endpoint
+3. Service checks if IP is in approved list
+4. Returns 200 (allow) or 403 (deny)
+5. Caddy grants or denies access based on response
 
-* No IPs approved on startup = all requests denied by default
+## Building and Running
 
----
+### Build from source:
+```bash
+cd src/cmd/server
+go build -o ../../ttl-allow-service .
+./ttl-allow-service
+```
 
-## 11. Background Worker
+### Docker:
+```bash
+docker build -t ttl-allow-service .
+docker run -p 8080:8080 -e MAX_TTL=24h ttl-allow-service
+```
 
-Runs every 60 seconds:
+## Security Considerations
 
-* remove expired knock requests
-* remove expired approved IPs
-
----
-
-## 12. Security Model
-
-* `/allow` protected externally (Authelia / reverse proxy)
-* `/knock` public but rate-limited
-* `/auth` endpoint designed for internal Caddy communication
-
----
-
-## 13. Docker Design
-
-### Requirements
-
-* single static binary
-* minimal image (scratch or alpine)
-* no runtime dependencies
-
----
-
-## 14. Failure Model (CRITICAL)
-
-* all state is in-memory
-* restart = wipe everything
-* Caddy is reset to empty allowlist on startup
-* system defaults to DENY ALL
-
----
-
-## 15. MVP Implementation Order
-
-1. HTTP server skeleton
-2. in-memory storage
-3. `/knock` endpoint + rate limiting
-4. `/allow` endpoint
-5. TTL system
-6. approved IP manager
-7. Caddy sync layer
-8. Dockerization
-
----
-
-## 16. Future Extensions (optional)
-
-* Web UI for admin panel
-* persistent storage (SQLite/Redis)
-* audit logs
-* per-service IP policies
-* IP geolocation enrichment
+- **`/allow` endpoint** should be protected by external authentication (Authelia, OAuth, etc.) via Caddy
+- **`/knock`** is public but rate-limited
+- **`/auth`** is for internal Caddy communication; consider binding to localhost only
+- All state is in-memory; **restart = deny all** (fail-safe design)
+- No persistence by design - ephemeral access control

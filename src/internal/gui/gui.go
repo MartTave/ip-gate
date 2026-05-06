@@ -10,23 +10,7 @@ import (
 	"ttl-allow-service/src/internal/store"
 )
 
-// TTLOption represents a TTL choice for the dropdown
-type TTLOption struct {
-	Value string
-	Label string
-}
-
-var ttlOptions = []TTLOption{
-	{"5m", "5 minutes"},
-	{"30m", "30 minutes"},
-	{"1h", "1 hour"},
-	{"2h", "2 hours"},
-	{"5h", "5 hours"},
-	{"12h", "12 hours"},
-	{"24h", "24 hours"},
-}
-
-// GUITemplate is the responsive HTML template with inline CSS
+// GUITemplate is the responsive HTML template with inline CSS and JavaScript
 const GUITemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -34,13 +18,13 @@ const GUITemplate = `<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TTL IP Allow - Admin</title>
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+        * { box-sizing: border-box; margin:0; padding:0; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f5; color: #333; line-height: 1.6; padding: 16px; }
-        .container { max-width: 1200px; margin: 0 auto; }
+        .container { max-width: 1200px; margin:0 auto; }
         h1 { font-size: 1.5rem; margin-bottom: 1rem; color: #2c3e50; }
         h2 { font-size: 1.2rem; margin: 1.5rem 0 0.75rem; color: #34495e; }
         .card { background: white; border-radius: 8px; padding: 16px; margin-bottom: 16px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .ip-item { border-bottom: 1px solid #eee; padding: 12px 0; }
+        .ip-item { border-bottom: 1px solid #eee; padding: 12px 0; transition: opacity 0.3s; }
         .ip-item:last-child { border-bottom: none; }
         .ip-address { font-family: monospace; font-size: 1.1rem; font-weight: bold; color: #2980b9; word-break: break-all; }
         .ip-meta { font-size: 0.85rem; color: #7f8c8d; margin: 4px 0; }
@@ -64,6 +48,7 @@ const GUITemplate = `<!DOCTYPE html>
         .external-links a { color: #3498db; text-decoration: none; margin-right: 12px; }
         .external-links a:hover { text-decoration: underline; }
         .stats { background: #ecf0f1; padding: 8px 12px; border-radius: 4px; font-size: 0.85rem; margin-bottom: 16px; }
+        .error-msg { color: #e74c3c; font-size: 0.85rem; margin-top: 8px; }
         
         /* Tablet and Desktop */
         @media (min-width: 768px) {
@@ -96,7 +81,7 @@ const GUITemplate = `<!DOCTYPE html>
                 <div class="card">
                     {{if .Pending}}
                         {{range .Pending}}
-                        <div class="ip-item">
+                        <div class="ip-item" data-ip="{{.IP}}">
                             <div class="ip-address">{{.IP}}</div>
                             <div class="ip-meta">Requested: {{.RequestedAt}}</div>
                             <div class="ip-meta">Expires: {{.ExpiresAt}} ({{.TimeLeft}})</div>
@@ -105,7 +90,7 @@ const GUITemplate = `<!DOCTYPE html>
                                 <a href="https://www.abuseipdb.com/check/{{.IP}}" target="_blank">abuseipdb.com</a>
                                 <a href="https://ip-api.com/#{{.IP}}" target="_blank">ip-api.com</a>
                             </div>
-                            <form method="POST" action="/allow" class="actions">
+                            <form method="POST" action="/allow" class="actions" data-ip="{{.IP}}">
                                 <input type="hidden" name="ip" value="{{.IP}}">
                                 <input type="hidden" name="action" value="allow">
                                 <select name="ttl" required>
@@ -115,7 +100,7 @@ const GUITemplate = `<!DOCTYPE html>
                                     {{end}}
                                 </select>
                                 <button type="submit" class="btn btn-approve">Approve</button>
-                                <button type="submit" name="action" value="deny" class="btn btn-deny" onclick="this.form.action.value='deny'; this.form.ttl.disabled=true;">Deny</button>
+                                <button type="submit" class="btn btn-deny" onclick="denyIP(event, this);">Deny</button>
                             </form>
                         </div>
                         {{end}}
@@ -130,7 +115,7 @@ const GUITemplate = `<!DOCTYPE html>
                 <div class="card">
                     {{if .Approved}}
                         {{range .Approved}}
-                        <div class="ip-item">
+                        <div class="ip-item" data-ip="{{.IP}}">
                             <div class="ip-address">{{.IP}}</div>
                             <div class="ip-meta">Expires: {{.ExpiresAt}} ({{.TimeLeft}})</div>
                             <div class="external-links">
@@ -138,7 +123,7 @@ const GUITemplate = `<!DOCTYPE html>
                                 <a href="https://www.abuseipdb.com/check/{{.IP}}" target="_blank">abuseipdb.com</a>
                                 <a href="https://ip-api.com/#{{.IP}}" target="_blank">ip-api.com</a>
                             </div>
-                            <form method="POST" action="/allow" class="actions">
+                            <form method="POST" action="/allow" class="actions" data-ip="{{.IP}}">
                                 <input type="hidden" name="ip" value="{{.IP}}">
                                 <input type="hidden" name="action" value="revoke">
                                 <button type="submit" class="btn btn-revoke">Revoke</button>
@@ -152,6 +137,94 @@ const GUITemplate = `<!DOCTYPE html>
             </div>
         </div>
     </div>
+    
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Intercept all form submissions
+        document.querySelectorAll('.ip-item form').forEach(form => {
+            form.addEventListener('submit', async function(e) {
+                e.preventDefault();
+                
+                const formData = new FormData(this);
+                const action = formData.get('action');
+                const ip = formData.get('ip');
+                
+                // Disable buttons during request
+                const buttons = this.querySelectorAll('button');
+                buttons.forEach(btn => btn.disabled = true);
+                
+                try {
+                    const response = await fetch('/allow', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                        body: new URLSearchParams(formData)
+                    });
+                    
+                    if (response.ok) {
+                        // Update UI after confirmation from server
+                        updateUIAfterAction(action, ip, this);
+                    } else {
+                        const error = await response.text();
+                        showError(this, error || 'Action failed');
+                        // Re-enable buttons
+                        buttons.forEach(btn => btn.disabled = false);
+                    }
+                } catch (err) {
+                    showError(this, 'Network error: ' + err.message);
+                    buttons.forEach(btn => btn.disabled = false);
+                }
+            });
+        });
+    });
+    
+    function denyIP(e, btn) {
+        e.preventDefault();
+        const form = btn.closest('form');
+        form.elements['action'].value = 'deny';
+        form.elements['ttl'].disabled = true;
+        // Trigger form submission
+        form.dispatchEvent(new Event('submit'));
+    }
+    
+    function updateUIAfterAction(action, ip, form) {
+        const ipItem = form.closest('.ip-item');
+        
+        if (action === 'deny' || action === 'revoke') {
+            // Remove the IP item from the list with fade animation
+            ipItem.style.opacity = '0';
+            setTimeout(() => {
+                ipItem.remove();
+                updateStats();
+            }, 300);
+        } else if (action === 'allow') {
+            // For approval, reload the page to show the IP in approved section
+            setTimeout(() => location.reload(), 500);
+        }
+    }
+    
+    function showError(form, message) {
+        // Remove existing error
+        let errorDiv = form.querySelector('.error-msg');
+        if (errorDiv) {
+            errorDiv.remove();
+        }
+        
+        errorDiv = document.createElement('div');
+        errorDiv.className = 'error-msg';
+        errorDiv.textContent = message;
+        form.appendChild(errorDiv);
+        
+        // Auto-remove after 5 seconds
+        setTimeout(() => errorDiv.remove(), 5000);
+    }
+    
+    function updateStats() {
+        // Simple reload to update stats (pending/approved counts)
+        setTimeout(() => location.reload(), 500);
+    }
+    </script>
 </body>
 </html>`
 
@@ -202,6 +275,9 @@ func RenderGUI(w http.ResponseWriter, r *http.Request) {
 	// Sort by IP
 	sort.Slice(pending, func(i, j int) bool { return pending[i].IP < pending[j].IP })
 	sort.Slice(approved, func(i, j int) bool { return approved[i].IP < approved[j].IP })
+
+	// Get TTL options from store (already sorted by duration)
+	ttlOptions := store.GetTTLOptions()
 
 	data := map[string]interface{}{
 		"Pending":    pending,

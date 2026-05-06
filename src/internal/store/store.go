@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -14,11 +15,13 @@ type KnockRequest struct {
 	IP          string
 	RequestedAt time.Time
 	ExpiresAt   time.Time
+	timer       *time.Timer // Timer for auto-expiry
 }
 
 type ApprovedIP struct {
 	IP        string
 	ExpiresAt time.Time
+	timer     *time.Timer // Timer for auto-expiry
 }
 
 type AllowRequest struct {
@@ -27,27 +30,26 @@ type AllowRequest struct {
 	TTL    string `json:"ttl,omitempty"`
 }
 
+// TTLOption represents a TTL choice for the dropdown
+type TTLOption struct {
+	Value    string
+	Label    string
+	Duration time.Duration
+}
+
 // Global State
 var (
 	knockRequests   = make(map[string]KnockRequest)
 	approvedIPs     = make(map[string]ApprovedIP)
 	rateLimiter     = make(map[string][]time.Time)
 	mu              sync.Mutex
-	allowedTTLs     = map[string]time.Duration{
-		"5m":  5 * time.Minute,
-		"30m": 30 * time.Minute,
-		"1h":  1 * time.Hour,
-		"2h":  2 * time.Hour,
-		"5h":  5 * time.Hour,
-		"12h": 12 * time.Hour,
-		"24h": 24 * time.Hour,
-	}
 
 	// Environment Variables
 	RequestTTLMinutes    int
 	RateLimitWindowSec   int
 	RateLimitMaxRequests int
 	ServerPort           string
+	MaxTTL               time.Duration // Maximum allowed TTL
 )
 
 // LoadEnv loads environment variables with defaults
@@ -93,9 +95,70 @@ func LoadEnv() {
 	if ServerPort == "" {
 		ServerPort = "8080"
 	}
+
+	// MAX_TTL (default 48h)
+	if v := os.Getenv("MAX_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			MaxTTL = d
+		} else {
+			log.Printf("Invalid MAX_TTL: %v, using default 48h", err)
+			MaxTTL = 48 * time.Hour
+		}
+	} else {
+		MaxTTL = 48 * time.Hour
+	}
+
+	// Log the number of TTL options available
+	options := GetTTLOptions()
+	log.Printf("MAX_TTL set to %s, generated %d TTL options", MaxTTL, len(options))
 }
 
-// CleanupExpired removes expired entries from state
+// GetTTLOptions returns the allowed TTL values sorted by duration
+func GetTTLOptions() []TTLOption {
+	var options []TTLOption
+
+	// Small fixed options (always available if < MaxTTL)
+	smallOptions := []time.Duration{
+		5 * time.Minute,
+		10 * time.Minute,
+		20 * time.Minute,
+		40 * time.Minute,
+		1 * time.Hour,
+		2 * time.Hour,
+		4 * time.Hour,
+		8 * time.Hour,
+		12 * time.Hour,
+		24 * time.Hour,
+		48 * time.Hour,
+	}
+
+	for _, d := range smallOptions {
+		if d <= MaxTTL {
+			options = append(options, TTLOption{
+				Value:    formatTTL(d),
+				Label:    formatTTL(d),
+				Duration: d,
+			})
+		}
+	}
+
+	// Sort by duration
+	sort.Slice(options, func(i, j int) bool {
+		return options[i].Duration < options[j].Duration
+	})
+
+	return options
+}
+
+// formatTTL formats duration to string (e.g., "5m", "1h", "24h")
+func formatTTL(d time.Duration) string {
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh", int(d.Hours()))
+}
+
+// CleanupExpired removes expired entries from state (safety net)
 func CleanupExpired() {
 	now := time.Now()
 
@@ -105,6 +168,9 @@ func CleanupExpired() {
 	// Clean knock requests
 	for ip, req := range knockRequests {
 		if now.After(req.ExpiresAt) {
+			if req.timer != nil {
+				req.timer.Stop()
+			}
 			delete(knockRequests, ip)
 		}
 	}
@@ -112,6 +178,9 @@ func CleanupExpired() {
 	// Clean approved IPs
 	for ip, app := range approvedIPs {
 		if now.After(app.ExpiresAt) {
+			if app.timer != nil {
+				app.timer.Stop()
+			}
 			delete(approvedIPs, ip)
 		}
 	}
@@ -175,13 +244,34 @@ func AddKnockRequest(ip string) bool {
 		return false
 	}
 
+	// Cancel existing timer if any
+	if req, exists := knockRequests[ip]; exists && req.timer != nil {
+		req.timer.Stop()
+	}
+
 	// Create new knock request
 	ttl := time.Duration(RequestTTLMinutes) * time.Minute
 	now := time.Now()
+	expiresAt := now.Add(ttl)
+
+	// Create timer for auto-expiry
+	timer := time.AfterFunc(ttl, func() {
+		mu.Lock()
+		if req, exists := knockRequests[ip]; exists {
+			if req.timer != nil {
+				req.timer.Stop()
+			}
+			delete(knockRequests, ip)
+		}
+		mu.Unlock()
+		log.Printf("Knock request expired for IP: %s", ip)
+	})
+
 	knockRequests[ip] = KnockRequest{
 		IP:          ip,
 		RequestedAt: now,
-		ExpiresAt:   now.Add(ttl),
+		ExpiresAt:   expiresAt,
+		timer:       timer,
 	}
 
 	return true
@@ -192,25 +282,76 @@ func ApproveIP(ip string, ttl string) error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	duration, ok := allowedTTLs[ttl]
-	if !ok {
+	// CHECK: IP must have a pending knock request
+	req, exists := knockRequests[ip]
+	if !exists || time.Now().After(req.ExpiresAt) {
+		delete(knockRequests, ip) // Clean up expired request if exists
+		return fmt.Errorf("IP %s has no pending request", ip)
+	}
+
+	// Find TTL in allowed options
+	options := GetTTLOptions()
+	var duration time.Duration
+	found := false
+	for _, opt := range options {
+		if opt.Value == ttl {
+			duration = opt.Duration
+			found = true
+			break
+		}
+	}
+	if !found {
 		return fmt.Errorf("invalid TTL: %s", ttl)
 	}
 
 	now := time.Now()
+	expiresAt := now.Add(duration)
+
+	// Cancel knock request timer
+	if req.timer != nil {
+		req.timer.Stop()
+	}
+
+	// Create timer for approved IP expiry
+	timer := time.AfterFunc(duration, func() {
+		mu.Lock()
+		if app, exists := approvedIPs[ip]; exists {
+			if app.timer != nil {
+				app.timer.Stop()
+			}
+			delete(approvedIPs, ip)
+		}
+		mu.Unlock()
+		log.Printf("Approved IP expired: %s", ip)
+	})
+
 	approvedIPs[ip] = ApprovedIP{
 		IP:        ip,
-		ExpiresAt: now.Add(duration),
+		ExpiresAt: expiresAt,
+		timer:     timer,
 	}
+
 	delete(knockRequests, ip)
 	return nil
 }
 
-// DenyIP removes an IP from pending requests
-func DenyIP(ip string) {
+// DenyIP removes an IP from pending requests, returns error if no pending request
+func DenyIP(ip string) error {
 	mu.Lock()
 	defer mu.Unlock()
+
+	// CHECK: IP must have a pending request
+	req, exists := knockRequests[ip]
+	if !exists || time.Now().After(req.ExpiresAt) {
+		delete(knockRequests, ip) // Clean up expired request if exists
+		return fmt.Errorf("IP %s has no pending request", ip)
+	}
+
+	if req.timer != nil {
+		req.timer.Stop()
+	}
 	delete(knockRequests, ip)
+	return nil
 }
 
 // GetPendingRequests returns a list of non-expired pending knock requests
@@ -262,9 +403,20 @@ func CheckIPAllowed(ip string) bool {
 	return time.Now().Before(app.ExpiresAt)
 }
 
-// RevokeIP removes an approved IP
-func RevokeIP(ip string) {
+// RevokeIP removes an approved IP, returns error if IP is not approved
+func RevokeIP(ip string) error {
 	mu.Lock()
 	defer mu.Unlock()
+
+	// CHECK: IP must be in approved list
+	app, exists := approvedIPs[ip]
+	if !exists {
+		return fmt.Errorf("IP %s is not approved", ip)
+	}
+
+	if app.timer != nil {
+		app.timer.Stop()
+	}
 	delete(approvedIPs, ip)
+	return nil
 }

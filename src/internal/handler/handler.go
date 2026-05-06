@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -20,8 +21,8 @@ func getClientIP(r *http.Request) string {
 	return host
 }
 
-// extractClientIPForAuth extracts client IP, preferring proxy headers (X-Forwarded-For, X-Real-IP)
-func ExtractClientIPForAuth(r *http.Request) string {
+// ExtractClientIPFromHeaders extracts client IP, preferring proxy headers (X-Forwarded-For, X-Real-IP)
+func ExtractClientIPFromHeaders(r *http.Request) string {
 	// Prefer X-Forwarded-For (Caddy forwards original client IP here)
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
@@ -36,6 +37,15 @@ func ExtractClientIPForAuth(r *http.Request) string {
 	return getClientIP(r)
 }
 
+// HealthHandler handles GET /health (health check endpoint)
+func HealthHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 // AuthHandler handles GET /auth (Caddy auth endpoint)
 func AuthHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -43,7 +53,7 @@ func AuthHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ip := ExtractClientIPForAuth(r)
+	ip := ExtractClientIPFromHeaders(r)
 	if ip == "" {
 		http.Error(w, "Could not determine client IP", http.StatusBadRequest)
 		return
@@ -65,15 +75,22 @@ func KnockHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ip := getClientIP(r)
+	ip := ExtractClientIPFromHeaders(r)
 	if ip == "" {
 		http.Error(w, "Could not determine client IP", http.StatusBadRequest)
 		return
 	}
 
-	// Rate limiting
+	// Rate limiting (applied to all /knock requests)
 	if !store.CheckRateLimit(ip) {
 		http.Error(w, "Too many requests", http.StatusTooManyRequests)
+		return
+	}
+
+	// Check if IP is already approved
+	if store.CheckIPAllowed(ip) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "already allowed")
 		return
 	}
 
@@ -152,7 +169,11 @@ func handleAllowPost(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Action {
 	case "deny":
-		store.DenyIP(req.IP)
+		err := store.DenyIP(req.IP)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "denied")
 
@@ -170,7 +191,11 @@ func handleAllowPost(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "allowed")
 
 	case "revoke":
-		store.RevokeIP(req.IP)
+		err := store.RevokeIP(req.IP)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "revoked")
 
@@ -179,8 +204,5 @@ func handleAllowPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If this was a form submission (from GUI), redirect back to the GUI
-	if !strings.Contains(r.Header.Get("Content-Type"), "application/json") && r.Header.Get("Accept") != "application/json" {
-		http.Redirect(w, r, "/allow", http.StatusSeeOther)
-	}
+	// No redirect - AJAX handles the UI update
 }

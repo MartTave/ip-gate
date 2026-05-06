@@ -4,6 +4,6 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
     network_mode: host
-  ttl_whitelist:
-    image: marttave/ttl_whitelist:latest
+  ip-gate:
+    image: polypode/ip-gate:latest
     network_mode: host
