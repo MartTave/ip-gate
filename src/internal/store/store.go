@@ -11,27 +11,196 @@ import (
 	"time"
 )
 
-// Data Structures
-type KnockRequest struct {
-	IP          string
+// IPState represents the state of an IP
+type IPState int
+
+const (
+	statePending IPState = iota
+	stateAllowed
+	stateDone
+)
+
+// DoneReason represents why an IP is in Done state
+type DoneReason string
+
+const (
+	DoneDenied       DoneReason = "denied"
+	DoneAutoRevoke   DoneReason = "automatic_revoke"
+	DoneManualRevoke DoneReason = "manual_revoke"
+)
+
+// State interface - different states carry their own data
+type State interface {
+	isState()
+}
+
+type PendingState struct {
 	RequestedAt time.Time
 	ExpiresAt   time.Time
-	timer       *time.Timer // Timer for auto-expiry
+	timer       *time.Timer
 }
 
-type ApprovedIP struct {
-	IP         string
+func (*PendingState) isState() {}
+
+type AllowedState struct {
+	approval Approval
+}
+
+func (*AllowedState) isState() {}
+
+type DoneState struct {
+	DoneAt time.Time
+	Reason DoneReason
+}
+
+func (*DoneState) isState() {}
+
+// Approval interface
+type Approval interface {
+	GetExpiresAt() time.Time
+	GetApprovedAt() time.Time
+	GetTimer() *time.Timer
+	SetTimer(t *time.Timer)
+	Format() string
+}
+
+type ManualApproval struct {
 	ExpiresAt  time.Time
-	ApprovedBy string    // "manual" or "automatic:<keyname>"
 	ApprovedAt time.Time
-	LastSeen   time.Time
-	timer      *time.Timer // Timer for auto-expiry
+	timer      *time.Timer
 }
 
-type AllowRequest struct {
-	IP     string `json:"ip"`
-	Action string `json:"action"`
-	TTL    string `json:"ttl,omitempty"`
+func (m *ManualApproval) GetExpiresAt() time.Time { return m.ExpiresAt }
+func (m *ManualApproval) GetApprovedAt() time.Time { return m.ApprovedAt }
+func (m *ManualApproval) GetTimer() *time.Timer        { return m.timer }
+func (m *ManualApproval) SetTimer(t *time.Timer)       { m.timer = t }
+func (m *ManualApproval) Format() string                { return "Manual" }
+
+type AutomaticApproval struct {
+	ExpiresAt  time.Time
+	ApprovedAt time.Time
+	KeyName    string
+	timer      *time.Timer
+}
+
+func (a *AutomaticApproval) GetExpiresAt() time.Time { return a.ExpiresAt }
+func (a *AutomaticApproval) GetApprovedAt() time.Time { return a.ApprovedAt }
+func (a *AutomaticApproval) GetTimer() *time.Timer        { return a.timer }
+func (a *AutomaticApproval) SetTimer(t *time.Timer)       { a.timer = t }
+func (a *AutomaticApproval) Format() string {
+	return fmt.Sprintf("Automatic (%s)", a.KeyName)
+}
+
+// IP struct - all fields private except via methods
+type IP struct {
+	ip       string
+	lastSeen time.Time
+	state    State
+}
+
+// IP methods (state transitions)
+
+func (ip *IP) CanRequest() bool {
+	switch ip.state.(type) {
+	case *PendingState:
+		return false
+	case *AllowedState:
+		return false
+	case *DoneState:
+		return ip.state.(*DoneState).Reason != DoneDenied
+	}
+	return true
+}
+
+func (ip *IP) IsCurrentlyAllowed(now time.Time) bool {
+	if as, ok := ip.state.(*AllowedState); ok {
+		return now.Before(as.approval.GetExpiresAt())
+	}
+	return false
+}
+
+func (ip *IP) Request(expiresAt time.Time, timer *time.Timer) {
+	now := time.Now()
+	ip.state = &PendingState{RequestedAt: now, ExpiresAt: expiresAt, timer: timer}
+}
+
+func (ip *IP) Approve(approval Approval) {
+	if ps, ok := ip.state.(*PendingState); ok && ps.timer != nil {
+		ps.timer.Stop()
+	}
+	ip.state = &AllowedState{approval: approval}
+}
+
+func (ip *IP) Deny() error {
+	if _, ok := ip.state.(*PendingState); !ok {
+		return fmt.Errorf("IP must be in Pending state to deny")
+	}
+	if ps, ok := ip.state.(*PendingState); ok && ps.timer != nil {
+		ps.timer.Stop()
+	}
+	ip.state = &DoneState{DoneAt: time.Now(), Reason: DoneDenied}
+	return nil
+}
+
+func (ip *IP) Revoke() error {
+	if _, ok := ip.state.(*AllowedState); !ok {
+		return fmt.Errorf("IP must be in Allowed state to revoke")
+	}
+	if as, ok := ip.state.(*AllowedState); ok && as.approval.GetTimer() != nil {
+		as.approval.GetTimer().Stop()
+	}
+	ip.state = &DoneState{DoneAt: time.Now(), Reason: DoneManualRevoke}
+	return nil
+}
+
+func (ip *IP) Timeout() {
+	switch s := ip.state.(type) {
+	case *PendingState:
+		if s.timer != nil {
+			s.timer.Stop()
+		}
+	case *AllowedState:
+		if s.approval.GetTimer() != nil {
+			s.approval.GetTimer().Stop()
+		}
+	}
+	ip.state = &DoneState{DoneAt: time.Now(), Reason: DoneAutoRevoke}
+}
+
+func (ip *IP) UpdateLastSeen() { ip.lastSeen = time.Now() }
+
+// Getter methods
+
+func (ip *IP) GetIP() string { return ip.ip }
+
+func (ip *IP) GetLastSeen() time.Time { return ip.lastSeen }
+
+func (ip *IP) GetApproval() (Approval, bool) {
+	if as, ok := ip.state.(*AllowedState); ok {
+		return as.approval, true
+	}
+	return nil, false
+}
+
+func (ip *IP) GetDoneReason() (DoneReason, bool) {
+	if ds, ok := ip.state.(*DoneState); ok {
+		return ds.Reason, true
+	}
+	return "", false
+}
+
+func (ip *IP) GetPendingRequestedAt() (time.Time, bool) {
+	if ps, ok := ip.state.(*PendingState); ok {
+		return ps.RequestedAt, true
+	}
+	return time.Time{}, false
+}
+
+func (ip *IP) GetPendingExpiresAt() (time.Time, bool) {
+	if ps, ok := ip.state.(*PendingState); ok {
+		return ps.ExpiresAt, true
+	}
+	return time.Time{}, false
 }
 
 // TTLOption represents a TTL choice for the dropdown
@@ -41,10 +210,16 @@ type TTLOption struct {
 	Duration time.Duration
 }
 
+// AllowRequest for JSON parsing
+type AllowRequest struct {
+	IP     string `json:"ip"`
+	Action string `json:"action"`
+	TTL    string `json:"ttl,omitempty"`
+}
+
 // Global State
 var (
-	knockRequests   = make(map[string]KnockRequest)
-	approvedIPs     = make(map[string]ApprovedIP)
+	ips = make(map[string]*IP)
 	rateLimiter     = make(map[string][]time.Time)
 	mu              sync.Mutex
 
@@ -53,9 +228,11 @@ var (
 	RateLimitWindowSec   int
 	RateLimitMaxRequests int
 	ServerPort           string
-	MaxTTL               time.Duration // Maximum allowed TTL
+	MaxTTL               time.Duration
 	PermanentKeys        map[string]string
 	PermanentKeyAuthTTL  time.Duration
+	PermanentKeyMaxIPs   int
+	PermanentKeyIPs      map[string]map[string]bool
 )
 
 // LoadEnv loads environment variables with defaults
@@ -109,7 +286,12 @@ func LoadEnv() {
 		for _, pair := range pairs {
 			parts := strings.SplitN(strings.TrimSpace(pair), ":", 2)
 			if len(parts) == 2 {
-				PermanentKeys[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+				key := strings.TrimSpace(parts[0])
+				name := strings.TrimSpace(parts[1])
+				if len(key) < 64 {
+					log.Printf("WARNING: Permanent key for '%s' is shorter than 64 characters (%d chars) - consider using a longer key", name, len(key))
+				}
+				PermanentKeys[key] = name
 			}
 		}
 		log.Printf("Loaded %d permanent keys", len(PermanentKeys))
@@ -124,6 +306,18 @@ func LoadEnv() {
 			log.Printf("Invalid PERMANENT_KEY_AUTH_TTL: %v, using default 4h", err)
 		}
 	}
+
+	// PERMANENT_KEY_MAX_IPS (default 1)
+	PermanentKeyMaxIPs = 1
+	if v := os.Getenv("PERMANENT_KEY_MAX_IPS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			PermanentKeyMaxIPs = n
+		} else {
+			log.Printf("Invalid PERMANENT_KEY_MAX_IPS: %v, using default 1", err)
+		}
+	}
+
+	PermanentKeyIPs = make(map[string]map[string]bool)
 
 	// MAX_TTL (default 48h)
 	if v := os.Getenv("MAX_TTL"); v != "" {
@@ -194,39 +388,33 @@ func CleanupExpired() {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Clean knock requests
-	for ip, req := range knockRequests {
-		if now.After(req.ExpiresAt) {
-			if req.timer != nil {
-				req.timer.Stop()
+	// Clean IPs in Pending or Allowed state that have expired
+	for ipStr, ip := range ips {
+		switch ip.state.(type) {
+		case *PendingState:
+			if ps, ok := ip.state.(*PendingState); ok && now.After(ps.ExpiresAt) {
+				ip.Timeout()
 			}
-			delete(knockRequests, ip)
+		case *AllowedState:
+			if as, ok := ip.state.(*AllowedState); ok && now.After(as.approval.GetExpiresAt()) {
+				ip.Timeout()
+			}
 		}
-	}
 
-	// Clean approved IPs
-	for ip, app := range approvedIPs {
-		if now.After(app.ExpiresAt) {
-			if app.timer != nil {
-				app.timer.Stop()
+		// Clean rate limiter
+		if timestamps, exists := rateLimiter[ipStr]; exists {
+			var valid []time.Time
+			window := time.Duration(RateLimitWindowSec) * time.Second
+			for _, t := range timestamps {
+				if now.Sub(t) < window {
+					valid = append(valid, t)
+				}
 			}
-			delete(approvedIPs, ip)
-		}
-	}
-
-	// Clean rate limiter
-	for ip, timestamps := range rateLimiter {
-		var valid []time.Time
-		window := time.Duration(RateLimitWindowSec) * time.Second
-		for _, t := range timestamps {
-			if now.Sub(t) < window {
-				valid = append(valid, t)
+			if len(valid) == 0 {
+				delete(rateLimiter, ipStr)
+			} else {
+				rateLimiter[ipStr] = valid
 			}
-		}
-		if len(valid) == 0 {
-			delete(rateLimiter, ip)
-		} else {
-			rateLimiter[ip] = valid
 		}
 	}
 }
@@ -264,59 +452,39 @@ func CheckRateLimit(ip string) bool {
 }
 
 // AddKnockRequest adds a new knock request for IP, returns false if already pending
-func AddKnockRequest(ip string) bool {
+func AddKnockRequest(ipStr string) bool {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Check for existing pending request
-	if req, exists := knockRequests[ip]; exists && time.Now().Before(req.ExpiresAt) {
+	ip, exists := ips[ipStr]
+	if !exists {
+		ip = &IP{ip: ipStr}
+		ips[ipStr] = ip
+	}
+
+	if !ip.CanRequest() {
 		return false
 	}
 
-	// Cancel existing timer if any
-	if req, exists := knockRequests[ip]; exists && req.timer != nil {
-		req.timer.Stop()
-	}
-
-	// Create new knock request
 	ttl := time.Duration(RequestTTLMinutes) * time.Minute
-	now := time.Now()
-	expiresAt := now.Add(ttl)
+	expiresAt := time.Now().Add(ttl)
 
-	// Create timer for auto-expiry
 	timer := time.AfterFunc(ttl, func() {
 		mu.Lock()
-		if req, exists := knockRequests[ip]; exists {
-			if req.timer != nil {
-				req.timer.Stop()
-			}
-			delete(knockRequests, ip)
+		defer mu.Unlock()
+		if ip, exists := ips[ipStr]; exists {
+			ip.Timeout()
 		}
-		mu.Unlock()
-		log.Printf("Knock request expired for IP: %s", ip)
 	})
 
-	knockRequests[ip] = KnockRequest{
-		IP:          ip,
-		RequestedAt: now,
-		ExpiresAt:   expiresAt,
-		timer:       timer,
-	}
-
+	ip.Request(expiresAt, timer)
 	return true
 }
 
 // ApproveIP approves an IP with given TTL, returns error if TTL invalid
-func ApproveIP(ip string, ttl string, approvedBy string) error {
+func ApproveIP(ipStr string, ttl string) error {
 	mu.Lock()
 	defer mu.Unlock()
-
-	// CHECK: IP must have a pending knock request
-	req, exists := knockRequests[ip]
-	if !exists || time.Now().After(req.ExpiresAt) {
-		delete(knockRequests, ip) // Clean up expired request if exists
-		return fmt.Errorf("IP %s has no pending request", ip)
-	}
 
 	// Find TTL in allowed options
 	options := GetTTLOptions()
@@ -333,72 +501,90 @@ func ApproveIP(ip string, ttl string, approvedBy string) error {
 		return fmt.Errorf("invalid TTL: %s", ttl)
 	}
 
-	now := time.Now()
-	expiresAt := now.Add(duration)
-
-	// Cancel knock request timer
-	if req.timer != nil {
-		req.timer.Stop()
+	ip, exists := ips[ipStr]
+	if !exists || ip == nil {
+		return fmt.Errorf("IP %s has no pending request", ipStr)
 	}
 
-	// Create timer for approved IP expiry
+	if _, ok := ip.state.(*PendingState); !ok {
+		return fmt.Errorf("IP %s has no pending request", ipStr)
+	}
+
+	expiresAt := time.Now().Add(duration)
+
+	approval := &ManualApproval{ExpiresAt: expiresAt, ApprovedAt: time.Now()}
+
 	timer := time.AfterFunc(duration, func() {
 		mu.Lock()
-		if app, exists := approvedIPs[ip]; exists {
-			if app.timer != nil {
-				app.timer.Stop()
-			}
-			delete(approvedIPs, ip)
+		defer mu.Unlock()
+		if ip, exists := ips[ipStr]; exists {
+			ip.Timeout()
 		}
-		mu.Unlock()
-		log.Printf("Approved IP expired: %s", ip)
 	})
+	approval.SetTimer(timer)
 
-	approvedIPs[ip] = ApprovedIP{
-		IP:         ip,
-		ExpiresAt:  expiresAt,
-		ApprovedBy: approvedBy,
-		ApprovedAt: time.Now(),
-		LastSeen:   time.Time{},
-		timer:      timer,
-	}
-
-	delete(knockRequests, ip)
+	ip.Approve(approval)
 	return nil
 }
 
 // ApproveIPByKey approves an IP via permanent key authentication
-func ApproveIPByKey(ip string, keyName string) error {
+func ApproveIPByKey(ipStr string, keyName string) error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Check IP limit for key
+	if keyIPs, exists := PermanentKeyIPs[keyName]; exists && len(keyIPs) >= PermanentKeyMaxIPs {
+		// Find oldest approved IP to revoke
+		var oldestIP *IP
+		var oldestIPStr string
+		for ipStr, _ := range keyIPs {
+			if ip, exists := ips[ipStr]; exists {
+				if as, ok := ip.state.(*AllowedState); ok {
+					if oldestIP == nil {
+						oldestIP = ip
+						oldestIPStr = ipStr
+					} else {
+						oldestApproval, _ := oldestIP.GetApproval()
+						if as.approval.GetApprovedAt().Before(oldestApproval.GetApprovedAt()) {
+							oldestIP = ip
+							oldestIPStr = ipStr
+						}
+					}
+				}
+			}
+		}
+		if oldestIP != nil {
+			oldestIP.Revoke()
+			delete(PermanentKeyIPs[keyName], oldestIPStr)
+		}
+	}
+
+	ip, exists := ips[ipStr]
+	if !exists {
+		ip = &IP{ip: ipStr}
+		ips[ipStr] = ip
+	}
+
 	now := time.Now()
 	expiresAt := now.Add(PermanentKeyAuthTTL)
 
-	// Cancel existing timer if any
-	if app, exists := approvedIPs[ip]; exists && app.timer != nil {
-		app.timer.Stop()
-	}
+	approval := &AutomaticApproval{ExpiresAt: expiresAt, ApprovedAt: now, KeyName: keyName}
 
-	// Create timer for auto-expiry
 	timer := time.AfterFunc(PermanentKeyAuthTTL, func() {
 		mu.Lock()
-		if app, exists := approvedIPs[ip]; exists {
-			if app.timer != nil {
-				app.timer.Stop()
-			}
-			delete(approvedIPs, ip)
+		defer mu.Unlock()
+		if ip, exists := ips[ipStr]; exists {
+			ip.Timeout()
 		}
-		mu.Unlock()
-		log.Printf("Key-auth IP expired: %s (approved by: automatic:%s)", ip, keyName)
 	})
+	approval.SetTimer(timer)
 
-	approvedIPs[ip] = ApprovedIP{
-		IP:         ip,
-		ExpiresAt:  expiresAt,
-		ApprovedBy:  fmt.Sprintf("automatic:%s", keyName),
-		ApprovedAt:  now,
-		LastSeen:    now,
-		timer:       timer,
+	if PermanentKeyIPs[keyName] == nil {
+		PermanentKeyIPs[keyName] = make(map[string]bool)
 	}
+	PermanentKeyIPs[keyName][ipStr] = true
 
+	ip.Approve(approval)
 	return nil
 }
 
@@ -407,18 +593,12 @@ func DenyIP(ip string) error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// CHECK: IP must have a pending request
-	req, exists := knockRequests[ip]
-	if !exists || time.Now().After(req.ExpiresAt) {
-		delete(knockRequests, ip) // Clean up expired request if exists
+	ipObj, exists := ips[ip]
+	if !exists {
 		return fmt.Errorf("IP %s has no pending request", ip)
 	}
 
-	if req.timer != nil {
-		req.timer.Stop()
-	}
-	delete(knockRequests, ip)
-	return nil
+	return ipObj.Deny()
 }
 
 // GetPendingRequests returns a list of non-expired pending knock requests
@@ -428,12 +608,12 @@ func GetPendingRequests() []map[string]interface{} {
 
 	now := time.Now()
 	var pending []map[string]interface{}
-	for ip, req := range knockRequests {
-		if now.Before(req.ExpiresAt) {
+	for ipStr, ip := range ips {
+		if ps, ok := ip.state.(*PendingState); ok && now.Before(ps.ExpiresAt) {
 			pending = append(pending, map[string]interface{}{
-				"ip":           ip,
-				"requested_at": req.RequestedAt,
-				"expires_at":   req.ExpiresAt,
+				"ip":           ipStr,
+				"requested_at": ps.RequestedAt,
+				"expires_at":   ps.ExpiresAt,
 			})
 		}
 	}
@@ -447,14 +627,14 @@ func GetApprovedIPs() []map[string]interface{} {
 
 	now := time.Now()
 	var approved []map[string]interface{}
-	for ip, app := range approvedIPs {
-		if now.Before(app.ExpiresAt) {
+	for ipStr, ip := range ips {
+		if as, ok := ip.state.(*AllowedState); ok && now.Before(as.approval.GetExpiresAt()) {
 			approved = append(approved, map[string]interface{}{
-				"ip":          ip,
-				"expires_at":  app.ExpiresAt,
-				"approved_by": app.ApprovedBy,
-				"approved_at": app.ApprovedAt,
-				"last_seen":   app.LastSeen,
+				"ip":          ipStr,
+				"expires_at":  as.approval.GetExpiresAt(),
+				"approved_by": as.approval.Format(),
+				"approved_at": as.approval.GetApprovedAt(),
+				"last_seen":   ip.lastSeen,
 			})
 		}
 	}
@@ -462,18 +642,17 @@ func GetApprovedIPs() []map[string]interface{} {
 }
 
 // CheckIPAllowed returns true if the IP is approved and not expired
-func CheckIPAllowed(ip string) bool {
+func CheckIPAllowed(ipStr string) bool {
 	mu.Lock()
 	defer mu.Unlock()
 
-	app, exists := approvedIPs[ip]
+	ip, exists := ips[ipStr]
 	if !exists {
 		return false
 	}
 
-	if time.Now().Before(app.ExpiresAt) {
-		app.LastSeen = time.Now()
-		approvedIPs[ip] = app
+	if ip.IsCurrentlyAllowed(time.Now()) {
+		ip.UpdateLastSeen()
 		return true
 	}
 	return false
@@ -484,15 +663,10 @@ func RevokeIP(ip string) error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// CHECK: IP must be in approved list
-	app, exists := approvedIPs[ip]
+	ipObj, exists := ips[ip]
 	if !exists {
 		return fmt.Errorf("IP %s is not approved", ip)
 	}
 
-	if app.timer != nil {
-		app.timer.Stop()
-	}
-	delete(approvedIPs, ip)
-	return nil
+	return ipObj.Revoke()
 }

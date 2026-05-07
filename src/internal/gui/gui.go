@@ -189,8 +189,8 @@ const GUITemplate = `<!DOCTYPE html>
         const form = btn.closest('form');
         form.elements['action'].value = 'deny';
         form.elements['ttl'].disabled = true;
-        // Trigger form submission
-        form.dispatchEvent(new Event('submit'));
+        // Trigger form submission via requestSubmit (properly cancelable)
+        form.requestSubmit();
     }
     
     function updateUIAfterAction(action, ip, form) {

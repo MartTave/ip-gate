@@ -26,6 +26,7 @@ All state is in-memory; restarts clear everything (fail-safe deny-by-default).
 | `WORKER_INTERVAL_MINUTES` | Background cleanup worker interval | `5` |
 | `PERMANENT_KEYS` | Comma-separated `key:name` pairs for key-based auth | (empty) |
 | `PERMANENT_KEY_AUTH_TTL` | TTL for key-authenticated approvals | `4h` |
+| `PERMANENT_KEY_MAX_IPS` | Max IPs allowed per permanent key (0=unlimited) | `1` |
 
 ### TTL Options
 
@@ -104,6 +105,11 @@ curl http://localhost:8080/auth
 ### `GET /key-auth?key=<key>`
 Permanent key authentication endpoint. Validates the key against configured `PERMANENT_KEYS`, and if valid, approves the requesting IP for a configurable duration (`PERMANENT_KEY_AUTH_TTL`).
 
+**Features:**
+- Rate limiting (same as `/knock` endpoint)
+- IP rotation: When `PERMANENT_KEY_MAX_IPS` is reached, oldest approved IP is revoked
+- Warning logged if key is shorter than 64 characters
+
 **Parameters:**
 - `key` - The permanent key to authenticate with
 
@@ -112,10 +118,16 @@ Permanent key authentication endpoint. Validates the key against configured `PER
 - `200 already allowed` - IP was already approved
 - `401 Invalid key` - Key not found in configuration
 - `400 Missing key parameter` - No key provided
+- `429 Too Many Requests` - Rate limit exceeded
 
 ```bash
 curl "http://localhost:8080/key-auth?key=abc123"
 ```
+
+**Admin UI displays:**
+- **Approved by**: "Manual" or "Automatic (key-name)"
+- **Approved at**: Timestamp when approved
+- **Last seen**: Last time `/auth` was accessed from this IP
 
 ## Caddy Integration
 

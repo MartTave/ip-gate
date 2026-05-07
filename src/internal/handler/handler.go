@@ -96,7 +96,7 @@ func KnockHandler(w http.ResponseWriter, r *http.Request) {
 	// Add knock request
 	if !store.AddKnockRequest(ip) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "already requested")
+		fmt.Fprintf(w, "cannot request")
 		return
 	}
 
@@ -181,7 +181,7 @@ func handleAllowPost(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "TTL required for allow action", http.StatusBadRequest)
 			return
 		}
-		err := store.ApproveIP(req.IP, req.TTL, "manual")
+		err := store.ApproveIP(req.IP, req.TTL)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -231,6 +231,12 @@ func KeyAuthHandler(w http.ResponseWriter, r *http.Request) {
 	ip := getClientIP(r)
 	if ip == "" {
 		http.Error(w, "Could not determine client IP", http.StatusBadRequest)
+		return
+	}
+
+	// Apply rate limiting (same as /knock)
+	if !store.CheckRateLimit(ip) {
+		http.Error(w, "Too many requests", http.StatusTooManyRequests)
 		return
 	}
 
