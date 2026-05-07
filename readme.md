@@ -24,6 +24,8 @@ All state is in-memory; restarts clear everything (fail-safe deny-by-default).
 | `RATE_LIMIT_MAX_REQUESTS` | Max knock requests per window per IP | `3` |
 | `PORT` | HTTP server port | `8080` |
 | `WORKER_INTERVAL_MINUTES` | Background cleanup worker interval | `5` |
+| `PERMANENT_KEYS` | Comma-separated `key:name` pairs for key-based auth | (empty) |
+| `PERMANENT_KEY_AUTH_TTL` | TTL for key-authenticated approvals | `4h` |
 
 ### TTL Options
 
@@ -97,6 +99,22 @@ Auth endpoint for Caddy. Returns 200 if IP is allowed, 403 otherwise.
 
 ```bash
 curl http://localhost:8080/auth
+```
+
+### `GET /key-auth?key=<key>`
+Permanent key authentication endpoint. Validates the key against configured `PERMANENT_KEYS`, and if valid, approves the requesting IP for a configurable duration (`PERMANENT_KEY_AUTH_TTL`).
+
+**Parameters:**
+- `key` - The permanent key to authenticate with
+
+**Responses:**
+- `200 allowed via key: <name>` - IP approved successfully
+- `200 already allowed` - IP was already approved
+- `401 Invalid key` - Key not found in configuration
+- `400 Missing key parameter` - No key provided
+
+```bash
+curl "http://localhost:8080/key-auth?key=abc123"
 ```
 
 ## Caddy Integration

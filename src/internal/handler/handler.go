@@ -181,7 +181,7 @@ func handleAllowPost(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "TTL required for allow action", http.StatusBadRequest)
 			return
 		}
-		err := store.ApproveIP(req.IP, req.TTL)
+		err := store.ApproveIP(req.IP, req.TTL, "manual")
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -204,4 +204,50 @@ func handleAllowPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// No redirect - AJAX handles the UI update
+}
+
+// KeyAuthHandler handles GET /key-auth?key=... (permanent key authentication)
+func KeyAuthHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract key from query parameter
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		http.Error(w, "Missing key parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Validate key
+	name, exists := store.PermanentKeys[key]
+	if !exists {
+		http.Error(w, "Invalid key", http.StatusUnauthorized)
+		return
+	}
+
+	// Get client IP
+	ip := getClientIP(r)
+	if ip == "" {
+		http.Error(w, "Could not determine client IP", http.StatusBadRequest)
+		return
+	}
+
+	// Check if already approved
+	if store.CheckIPAllowed(ip) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "already allowed")
+		return
+	}
+
+	// Approve IP
+	err := store.ApproveIPByKey(ip, name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "allowed via key: %s", name)
 }

@@ -118,6 +118,11 @@ const GUITemplate = `<!DOCTYPE html>
                         <div class="ip-item" data-ip="{{.IP}}">
                             <div class="ip-address">{{.IP}}</div>
                             <div class="ip-meta">Expires: {{.ExpiresAt}} ({{.TimeLeft}})</div>
+                            <div class="ip-meta">Approved by: {{.ApprovedBy}}</div>
+                            <div class="ip-meta">Approved at: {{.ApprovedAt}}</div>
+                            {{if .LastSeen}}
+                            <div class="ip-meta">Last seen: {{.LastSeen}}</div>
+                            {{end}}
                             <div class="external-links">
                                 <a href="https://ipinfo.io/{{.IP}}" target="_blank">ipinfo.io</a>
                                 <a href="https://www.abuseipdb.com/check/{{.IP}}" target="_blank">abuseipdb.com</a>
@@ -236,12 +241,15 @@ func RenderGUI(w http.ResponseWriter, r *http.Request) {
 	approvedData := store.GetApprovedIPs()
 
 	// Convert to GUI-friendly format
-	type guiIP struct {
-		IP           string
-		RequestedAt  string
-		ExpiresAt    string
-		TimeLeft     string
-	}
+type guiIP struct {
+	IP           string
+	RequestedAt  string
+	ExpiresAt    string
+	TimeLeft     string
+	ApprovedBy   string
+	ApprovedAt   string
+	LastSeen     string
+}
 
 	now := time.Now()
 
@@ -263,8 +271,13 @@ func RenderGUI(w http.ResponseWriter, r *http.Request) {
 	var approved []guiIP
 	for _, a := range approvedData {
 		ip := guiIP{
-			IP:        a["ip"].(string),
-			ExpiresAt: a["expires_at"].(time.Time).Format("2006-01-02 15:04:05"),
+			IP:         a["ip"].(string),
+			ExpiresAt:  a["expires_at"].(time.Time).Format("2006-01-02 15:04:05"),
+			ApprovedBy:  a["approved_by"].(string),
+			ApprovedAt:  a["approved_at"].(time.Time).Format("2006-01-02 15:04:05"),
+		}
+		if ls, ok := a["last_seen"].(time.Time); ok && !ls.IsZero() {
+			ip.LastSeen = ls.Format("2006-01-02 15:04:05")
 		}
 		expiresAt := a["expires_at"].(time.Time)
 		diff := expiresAt.Sub(now)

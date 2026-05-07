@@ -22,6 +22,7 @@ func main() {
 	// Setup routes
 	http.HandleFunc("/health", handler.HealthHandler)
 	http.HandleFunc("/knock", handler.KnockHandler)
+	http.HandleFunc("/key-auth", handler.KeyAuthHandler)
 	http.HandleFunc("/allow", handler.AllowHandler)
 	http.HandleFunc("/auth", handler.AuthHandler)
 

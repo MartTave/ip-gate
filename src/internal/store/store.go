@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,9 +20,12 @@ type KnockRequest struct {
 }
 
 type ApprovedIP struct {
-	IP        string
-	ExpiresAt time.Time
-	timer     *time.Timer // Timer for auto-expiry
+	IP         string
+	ExpiresAt  time.Time
+	ApprovedBy string    // "manual" or "automatic:<keyname>"
+	ApprovedAt time.Time
+	LastSeen   time.Time
+	timer      *time.Timer // Timer for auto-expiry
 }
 
 type AllowRequest struct {
@@ -50,6 +54,8 @@ var (
 	RateLimitMaxRequests int
 	ServerPort           string
 	MaxTTL               time.Duration // Maximum allowed TTL
+	PermanentKeys        map[string]string
+	PermanentKeyAuthTTL  time.Duration
 )
 
 // LoadEnv loads environment variables with defaults
@@ -94,6 +100,29 @@ func LoadEnv() {
 	ServerPort = os.Getenv("PORT")
 	if ServerPort == "" {
 		ServerPort = "8080"
+	}
+
+	// PERMANENT_KEYS (format: "key1:name1,key2:name2")
+	PermanentKeys = make(map[string]string)
+	if v := os.Getenv("PERMANENT_KEYS"); v != "" {
+		pairs := strings.Split(v, ",")
+		for _, pair := range pairs {
+			parts := strings.SplitN(strings.TrimSpace(pair), ":", 2)
+			if len(parts) == 2 {
+				PermanentKeys[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+			}
+		}
+		log.Printf("Loaded %d permanent keys", len(PermanentKeys))
+	}
+
+	// PERMANENT_KEY_AUTH_TTL (default 4h)
+	PermanentKeyAuthTTL = 4 * time.Hour
+	if v := os.Getenv("PERMANENT_KEY_AUTH_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			PermanentKeyAuthTTL = d
+		} else {
+			log.Printf("Invalid PERMANENT_KEY_AUTH_TTL: %v, using default 4h", err)
+		}
 	}
 
 	// MAX_TTL (default 48h)
@@ -278,7 +307,7 @@ func AddKnockRequest(ip string) bool {
 }
 
 // ApproveIP approves an IP with given TTL, returns error if TTL invalid
-func ApproveIP(ip string, ttl string) error {
+func ApproveIP(ip string, ttl string, approvedBy string) error {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -326,12 +355,50 @@ func ApproveIP(ip string, ttl string) error {
 	})
 
 	approvedIPs[ip] = ApprovedIP{
-		IP:        ip,
-		ExpiresAt: expiresAt,
-		timer:     timer,
+		IP:         ip,
+		ExpiresAt:  expiresAt,
+		ApprovedBy: approvedBy,
+		ApprovedAt: time.Now(),
+		LastSeen:   time.Time{},
+		timer:      timer,
 	}
 
 	delete(knockRequests, ip)
+	return nil
+}
+
+// ApproveIPByKey approves an IP via permanent key authentication
+func ApproveIPByKey(ip string, keyName string) error {
+	now := time.Now()
+	expiresAt := now.Add(PermanentKeyAuthTTL)
+
+	// Cancel existing timer if any
+	if app, exists := approvedIPs[ip]; exists && app.timer != nil {
+		app.timer.Stop()
+	}
+
+	// Create timer for auto-expiry
+	timer := time.AfterFunc(PermanentKeyAuthTTL, func() {
+		mu.Lock()
+		if app, exists := approvedIPs[ip]; exists {
+			if app.timer != nil {
+				app.timer.Stop()
+			}
+			delete(approvedIPs, ip)
+		}
+		mu.Unlock()
+		log.Printf("Key-auth IP expired: %s (approved by: automatic:%s)", ip, keyName)
+	})
+
+	approvedIPs[ip] = ApprovedIP{
+		IP:         ip,
+		ExpiresAt:  expiresAt,
+		ApprovedBy:  fmt.Sprintf("automatic:%s", keyName),
+		ApprovedAt:  now,
+		LastSeen:    now,
+		timer:       timer,
+	}
+
 	return nil
 }
 
@@ -383,8 +450,11 @@ func GetApprovedIPs() []map[string]interface{} {
 	for ip, app := range approvedIPs {
 		if now.Before(app.ExpiresAt) {
 			approved = append(approved, map[string]interface{}{
-				"ip":         ip,
-				"expires_at": app.ExpiresAt,
+				"ip":          ip,
+				"expires_at":  app.ExpiresAt,
+				"approved_by": app.ApprovedBy,
+				"approved_at": app.ApprovedAt,
+				"last_seen":   app.LastSeen,
 			})
 		}
 	}
@@ -400,7 +470,13 @@ func CheckIPAllowed(ip string) bool {
 	if !exists {
 		return false
 	}
-	return time.Now().Before(app.ExpiresAt)
+
+	if time.Now().Before(app.ExpiresAt) {
+		app.LastSeen = time.Now()
+		approvedIPs[ip] = app
+		return true
+	}
+	return false
 }
 
 // RevokeIP removes an approved IP, returns error if IP is not approved
