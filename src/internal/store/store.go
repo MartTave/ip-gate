@@ -283,11 +283,22 @@ func LoadEnv() {
 	PermanentKeys = make(map[string]string)
 	if v := os.Getenv("PERMANENT_KEYS"); v != "" {
 		pairs := strings.Split(v, ",")
+		seenNames := make(map[string]bool)
 		for _, pair := range pairs {
 			parts := strings.SplitN(strings.TrimSpace(pair), ":", 2)
 			if len(parts) == 2 {
 				key := strings.TrimSpace(parts[0])
 				name := strings.TrimSpace(parts[1])
+
+				if _, exists := PermanentKeys[key]; exists {
+					log.Fatalf("Duplicate permanent key detected: %s", key)
+				}
+
+				if seenNames[name] {
+					log.Fatalf("Duplicate permanent key name detected: %s", name)
+				}
+				seenNames[name] = true
+
 				if len(key) < 64 {
 					log.Printf("WARNING: Permanent key for '%s' is shorter than 64 characters (%d chars) - consider using a longer key", name, len(key))
 				}
@@ -389,32 +400,32 @@ func CleanupExpired() {
 	defer mu.Unlock()
 
 	// Clean IPs in Pending or Allowed state that have expired
-	for ipStr, ip := range ips {
-		switch ip.state.(type) {
+	for _, ip := range ips {
+		switch s := ip.state.(type) {
 		case *PendingState:
-			if ps, ok := ip.state.(*PendingState); ok && now.After(ps.ExpiresAt) {
+			if now.After(s.ExpiresAt) {
 				ip.Timeout()
 			}
 		case *AllowedState:
-			if as, ok := ip.state.(*AllowedState); ok && now.After(as.approval.GetExpiresAt()) {
+			if now.After(s.approval.GetExpiresAt()) {
 				ip.Timeout()
 			}
 		}
+	}
 
-		// Clean rate limiter
-		if timestamps, exists := rateLimiter[ipStr]; exists {
-			var valid []time.Time
-			window := time.Duration(RateLimitWindowSec) * time.Second
-			for _, t := range timestamps {
-				if now.Sub(t) < window {
-					valid = append(valid, t)
-				}
+	// Clean rate limiter (all entries)
+	for ipStr, timestamps := range rateLimiter {
+		var valid []time.Time
+		window := time.Duration(RateLimitWindowSec) * time.Second
+		for _, t := range timestamps {
+			if now.Sub(t) < window {
+				valid = append(valid, t)
 			}
-			if len(valid) == 0 {
-				delete(rateLimiter, ipStr)
-			} else {
-				rateLimiter[ipStr] = valid
-			}
+		}
+		if len(valid) == 0 {
+			delete(rateLimiter, ipStr)
+		} else {
+			rateLimiter[ipStr] = valid
 		}
 	}
 }

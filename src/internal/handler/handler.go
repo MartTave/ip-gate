@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -208,8 +209,16 @@ func handleAllowPost(w http.ResponseWriter, r *http.Request) {
 
 // KeyAuthHandler handles GET /key-auth?key=... (permanent key authentication)
 func KeyAuthHandler(w http.ResponseWriter, r *http.Request) {
+
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Get client IP
+	ip := ExtractClientIPFromHeaders(r)
+	// Apply rate limiting (same as /knock)
+	if !store.CheckRateLimit(ip) {
+		http.Error(w, "Too many requests", http.StatusTooManyRequests)
 		return
 	}
 
@@ -227,16 +236,8 @@ func KeyAuthHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get client IP
-	ip := getClientIP(r)
 	if ip == "" {
 		http.Error(w, "Could not determine client IP", http.StatusBadRequest)
-		return
-	}
-
-	// Apply rate limiting (same as /knock)
-	if !store.CheckRateLimit(ip) {
-		http.Error(w, "Too many requests", http.StatusTooManyRequests)
 		return
 	}
 
