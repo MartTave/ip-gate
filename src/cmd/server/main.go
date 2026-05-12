@@ -33,9 +33,9 @@ func main() {
 	http.HandleFunc("/pwa/status", handler.PWAStatusHandler)
 	http.HandleFunc("/pwa/auth", handler.PWAAuthHandler)
 	http.HandleFunc("/pwa/revoke", handler.PWARevokeHandler)
-	http.HandleFunc("/manifest.json", handler.ManifestHandler)
-	http.HandleFunc("/service-worker.js", handler.ServiceWorkerHandler)
-	http.HandleFunc("/pwa-icon.svg", handler.PwaIconHandler)
+	http.HandleFunc("/pwa/manifest.json", handler.ManifestHandler)
+	http.HandleFunc("/pwa/service-worker.js", handler.ServiceWorkerHandler)
+	http.HandleFunc("/pwa/pwa-icon.svg", handler.PwaIconHandler)
 
 	// Start server
 	log.Printf("Server listening on :%s", store.ServerPort)

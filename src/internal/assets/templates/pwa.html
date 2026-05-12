@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>IP Gate</title>
-    <link rel="manifest" href="/manifest.json">
+    <link rel="manifest" href="/pwa/manifest.json">
     <meta name="theme-color" content="#2c3e50">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -105,7 +105,7 @@
         let deferredPrompt = null;
 
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/service-worker.js').catch(function(){});
+            navigator.serviceWorker.register('/pwa/service-worker.js').catch(function(){});
         }
 
         window.addEventListener('beforeinstallprompt', function(e) {
