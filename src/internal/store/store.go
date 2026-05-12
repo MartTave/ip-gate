@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"sort"
@@ -125,8 +126,15 @@ func (ip *IP) Request(expiresAt time.Time, timer *time.Timer) {
 }
 
 func (ip *IP) Approve(approval Approval) {
-	if ps, ok := ip.state.(*PendingState); ok && ps.timer != nil {
-		ps.timer.Stop()
+	switch s := ip.state.(type) {
+	case *PendingState:
+		if s.timer != nil {
+			s.timer.Stop()
+		}
+	case *AllowedState:
+		if s.approval.GetTimer() != nil {
+			s.approval.GetTimer().Stop()
+		}
 	}
 	ip.state = &AllowedState{approval: approval}
 }
@@ -220,19 +228,21 @@ type AllowRequest struct {
 // Global State
 var (
 	ips = make(map[string]*IP)
-	rateLimiter     = make(map[string][]time.Time)
-	mu              sync.Mutex
+	mu  sync.Mutex
 
 	// Environment Variables
 	RequestTTLMinutes    int
-	RateLimitWindowSec   int
-	RateLimitMaxRequests int
 	ServerPort           string
 	MaxTTL               time.Duration
 	PermanentKeys        map[string]string
 	PermanentKeyAuthTTL  time.Duration
 	PermanentKeyMaxIPs   int
 	PermanentKeyIPs      map[string]map[string]bool
+
+	// Rate limiter (per-IP sliding window)
+	RateLimitWindowSec   int
+	RateLimitMaxRequests int
+	rateLimiter          = make(map[string][]time.Time)
 )
 
 // LoadEnv loads environment variables with defaults
@@ -249,28 +259,24 @@ func LoadEnv() {
 		RequestTTLMinutes = 5
 	}
 
-	// RATE_LIMIT_WINDOW_SEC
+	// RATE_LIMIT_WINDOW_SEC (default 60)
+	RateLimitWindowSec = 60
 	if v := os.Getenv("RATE_LIMIT_WINDOW_SEC"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			RateLimitWindowSec = n
 		} else {
 			log.Printf("Invalid RATE_LIMIT_WINDOW_SEC: %v, using default 60", err)
-			RateLimitWindowSec = 60
 		}
-	} else {
-		RateLimitWindowSec = 60
 	}
 
-	// RATE_LIMIT_MAX_REQUESTS
+	// RATE_LIMIT_MAX_REQUESTS (default 20)
+	RateLimitMaxRequests = 20
 	if v := os.Getenv("RATE_LIMIT_MAX_REQUESTS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			RateLimitMaxRequests = n
 		} else {
-			log.Printf("Invalid RATE_LIMIT_MAX_REQUESTS: %v, using default 3", err)
-			RateLimitMaxRequests = 3
+			log.Printf("Invalid RATE_LIMIT_MAX_REQUESTS: %v, using default 20", err)
 		}
-	} else {
-		RateLimitMaxRequests = 3
 	}
 
 	// PORT
@@ -340,6 +346,17 @@ func LoadEnv() {
 		}
 	} else {
 		MaxTTL = 48 * time.Hour
+	}
+
+	// LOG_FILE (optional, enables dual stdout+file logging)
+	if v := os.Getenv("LOG_FILE"); v != "" {
+		f, err := os.OpenFile(v, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Printf("WARNING: Could not open LOG_FILE %s: %v", v, err)
+		} else {
+			log.SetOutput(io.MultiWriter(os.Stdout, f))
+			log.Printf("Logging to file: %s", v)
+		}
 	}
 
 	// Log the number of TTL options available
@@ -413,7 +430,7 @@ func CleanupExpired() {
 		}
 	}
 
-	// Clean rate limiter (all entries)
+	// Clean rate limiter
 	for ipStr, timestamps := range rateLimiter {
 		var valid []time.Time
 		window := time.Duration(RateLimitWindowSec) * time.Second
@@ -430,7 +447,7 @@ func CleanupExpired() {
 	}
 }
 
-// CheckRateLimit returns false if IP has exceeded rate limit
+// CheckRateLimit returns false if IP has exceeded the rate limit
 func CheckRateLimit(ip string) bool {
 	mu.Lock()
 	defer mu.Unlock()
@@ -444,7 +461,6 @@ func CheckRateLimit(ip string) bool {
 		timestamps = []time.Time{}
 	}
 
-	// Filter valid timestamps within window
 	var valid []time.Time
 	for _, t := range timestamps {
 		if now.Sub(t) < window {
@@ -460,6 +476,49 @@ func CheckRateLimit(ip string) bool {
 	valid = append(valid, now)
 	rateLimiter[ip] = valid
 	return true
+}
+
+// HasPermanentKeys returns true if at least one permanent key is configured
+func HasPermanentKeys() bool {
+	return len(PermanentKeys) > 0
+}
+
+// IPAuthStatus holds authorization details for a client IP
+type IPAuthStatus struct {
+	Authorized   bool
+	ExpiresAt    time.Time
+	KeyName      string
+	ApprovalType string
+}
+
+// GetIPAuthStatus returns the authorization status for an IP without granting access
+func GetIPAuthStatus(ipStr string) *IPAuthStatus {
+	mu.Lock()
+	defer mu.Unlock()
+
+	ip, exists := ips[ipStr]
+	if !exists {
+		return &IPAuthStatus{Authorized: false}
+	}
+
+	if as, ok := ip.state.(*AllowedState); ok {
+		now := time.Now()
+		if now.Before(as.approval.GetExpiresAt()) {
+			ip.UpdateLastSeen()
+			keyName := ""
+			if aa, ok := as.approval.(*AutomaticApproval); ok {
+				keyName = aa.KeyName
+			}
+			return &IPAuthStatus{
+				Authorized:   true,
+				ExpiresAt:    as.approval.GetExpiresAt(),
+				KeyName:      keyName,
+				ApprovalType: as.approval.Format(),
+			}
+		}
+	}
+
+	return &IPAuthStatus{Authorized: false}
 }
 
 // AddKnockRequest adds a new knock request for IP, returns false if already pending
@@ -596,6 +655,27 @@ func ApproveIPByKey(ipStr string, keyName string) error {
 	PermanentKeyIPs[keyName][ipStr] = true
 
 	ip.Approve(approval)
+	return nil
+}
+
+// RevokeIPByKey revokes an IP authorization and cleans up key tracking
+func RevokeIPByKey(ipStr string, keyName string) error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	ipObj, exists := ips[ipStr]
+	if !exists {
+		return fmt.Errorf("IP %s is not approved", ipStr)
+	}
+
+	if err := ipObj.Revoke(); err != nil {
+		return err
+	}
+
+	if keyIPs, exists := PermanentKeyIPs[keyName]; exists {
+		delete(keyIPs, ipStr)
+	}
+
 	return nil
 }
 

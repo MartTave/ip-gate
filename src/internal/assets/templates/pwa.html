@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IP Gate</title>
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#2c3e50">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f5; color: #333; line-height: 1.6; padding: 16px; }
+        .container { max-width: 480px; margin: 0 auto; }
+        .header { background: #2c3e50; color: white; padding: 20px; border-radius: 12px 12px 0 0; text-align: center; }
+        .header h1 { font-size: 1.4rem; font-weight: 600; }
+        .header .subtitle { font-size: 0.85rem; opacity: 0.8; margin-top: 4px; }
+        .card { background: white; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        .card:last-of-type { border-radius: 0 0 12px 12px; margin-bottom: 16px; }
+        .row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: 0.9rem; }
+        .row .label { color: #7f8c8d; }
+        .row .value { font-family: monospace; font-weight: 600; color: #2c3e50; }
+        .key-row { display: flex; gap: 8px; align-items: stretch; }
+        .key-row input { flex: 1; padding: 12px 16px; border: 2px solid #ddd; border-radius: 8px; font-size: 1rem; outline: none; transition: border-color 0.2s; font-family: monospace; }
+        .key-row input:focus { border-color: #3498db; }
+        .key-row .btn-sm { padding: 12px 20px; border: none; border-radius: 8px; font-size: 0.9rem; font-weight: 600; cursor: pointer; transition: opacity 0.2s; white-space: nowrap; min-width: 80px; }
+        .key-row .btn-sm:hover { opacity: 0.9; }
+        .btn-save { background: #3498db; color: white; }
+        .btn-remove { background: #e74c3c; color: white; }
+        .btn { display: block; width: 100%; padding: 14px; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: opacity 0.2s; min-height: 48px; margin-top: 12px; }
+        .btn:hover { opacity: 0.9; }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-authorize { background: #27ae60; color: white; }
+        .btn-install { background: #8e44ad; color: white; margin-top: 0; }
+        .btn-refresh { background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3); border-radius: 6px; padding: 6px 14px; font-size: 0.85rem; cursor: pointer; color: rgba(255,255,255,0.9); transition: background 0.2s; margin-left: auto; white-space: nowrap; }
+        .btn-refresh:hover { background: rgba(255,255,255,0.25); }
+        .btn-auth-group { display: flex; gap: 8px; margin-top: 12px; }
+        .btn-auth-group .btn { flex: 1; margin-top: 0; }
+        .btn-reauth { background: #27ae60; color: white; }
+        .btn-revoke-auth { background: #e74c3c; color: white; }
+        .btn-revoke-auth:hover { background: #c0392b; }
+        .header-top { display: flex; align-items: center; padding: 0 0 8px 0; }
+        .header-top h1 { font-size: 1.4rem; font-weight: 600; }
+        .status-card { text-align: center; padding: 24px 20px; min-height: 80px; }
+        .status-title { font-size: 1.1rem; font-weight: 600; margin-bottom: 4px; }
+        .status-message { font-size: 0.9rem; color: #7f8c8d; margin-bottom: 12px; }
+        .status-expiry { font-size: 1.3rem; font-weight: 700; color: #2c3e50; margin: 8px 0; font-family: monospace; }
+        .status-detail { font-size: 0.85rem; color: #95a5a6; margin: 2px 0; }
+        .status-keyname { font-size: 0.85rem; color: #7f8c8d; background: #f0f0f0; display: inline-block; padding: 4px 12px; border-radius: 12px; margin-top: 8px; }
+        .hidden { display: none !important; }
+        .text-green { color: #27ae60; }
+        .text-red { color: #e74c3c; }
+        .text-gray { color: #7f8c8d; }
+        .install-section { text-align: center; padding: 12px 0; }
+        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ddd; border-top-color: #3498db; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @media (min-width: 768px) {
+            body { padding: 40px 16px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="header-top">
+                <h1>IP Gate</h1>
+                <button class="btn-refresh" id="refresh-btn">Refresh</button>
+            </div>
+            <div class="subtitle">Key-Based IP Authorization</div>
+        </div>
+
+        <div class="card">
+            <div class="row">
+                <span class="label">Your IP</span>
+                <span class="value" id="client-ip">—</span>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="key-row">
+                <input type="password" id="key-input" placeholder="Auth key" autocomplete="off">
+                <button class="btn-sm btn-save" id="key-btn">Save</button>
+            </div>
+            <button class="btn btn-authorize" id="auth-btn" disabled>Authorize My IP</button>
+            <div class="btn-auth-group hidden" id="auth-authorized">
+                <button class="btn btn-reauth" id="reauth-btn">Re-authorize</button>
+                <button class="btn btn-revoke-auth" id="revoke-btn">Remove Authorization</button>
+            </div>
+            <div id="loading" class="hidden" style="text-align:center;margin-top:12px;color:#7f8c8d;font-size:0.9rem;">
+                <span class="spinner"></span> Working...</div>
+        </div>
+
+        <div class="card status-card hidden" id="status-card">
+            <div class="status-title" id="status-title"></div>
+            <div class="status-message" id="status-message"></div>
+            <div class="status-expiry hidden" id="status-expiry"></div>
+            <div class="status-detail" id="status-detail"></div>
+            <div class="status-keyname hidden" id="status-keyname"></div>
+        </div>
+
+        <div class="install-section hidden" id="install-section">
+            <button class="btn btn-install" id="install-btn">Install App</button>
+        </div>
+    </div>
+
+    <script>
+        let deferredPrompt = null;
+
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/service-worker.js').catch(function(){});
+        }
+
+        window.addEventListener('beforeinstallprompt', function(e) {
+            e.preventDefault();
+            deferredPrompt = e;
+            document.getElementById('install-section').classList.remove('hidden');
+        });
+
+        document.getElementById('install-btn').addEventListener('click', async function() {
+            if (!deferredPrompt) return;
+            deferredPrompt.prompt();
+            const result = await deferredPrompt.userChoice;
+            if (result.outcome === 'accepted') {
+                document.getElementById('install-section').classList.add('hidden');
+            }
+            deferredPrompt = null;
+        });
+
+        const LS_KEY = 'ipgate_key';
+        const keyInput = document.getElementById('key-input');
+        const keyBtn = document.getElementById('key-btn');
+        const authBtn = document.getElementById('auth-btn');
+        const authAuthorized = document.getElementById('auth-authorized');
+        const reauthBtn = document.getElementById('reauth-btn');
+        const revokeBtn = document.getElementById('revoke-btn');
+        const refreshBtn = document.getElementById('refresh-btn');
+        const loading = document.getElementById('loading');
+        const statusCard = document.getElementById('status-card');
+        const statusTitle = document.getElementById('status-title');
+        const statusMessage = document.getElementById('status-message');
+        const statusExpiry = document.getElementById('status-expiry');
+        const statusDetail = document.getElementById('status-detail');
+        const statusKeyname = document.getElementById('status-keyname');
+        const clientIp = document.getElementById('client-ip');
+
+        let countdownInterval = null;
+        let savedKey = null;
+
+        function loadSavedKey() {
+            const val = localStorage.getItem(LS_KEY);
+            return val ? val : null;
+        }
+
+        function setKeyMode(hasKey) {
+            if (hasKey) {
+                keyBtn.textContent = 'Remove';
+                keyBtn.className = 'btn-sm btn-remove';
+            } else {
+                keyBtn.textContent = 'Save';
+                keyBtn.className = 'btn-sm btn-save';
+            }
+        }
+
+        function showAuthButton(mode) {
+            authAuthorized.classList.add('hidden');
+            authBtn.classList.add('hidden');
+            if (mode === 'authorized') {
+                authAuthorized.classList.remove('hidden');
+            } else if (mode === 'authorize') {
+                authBtn.classList.remove('hidden');
+                authBtn.disabled = !savedKey;
+            }
+        }
+
+        function refreshUI(clearStatus) {
+            savedKey = loadSavedKey();
+            if (savedKey) {
+                keyInput.value = savedKey;
+                setKeyMode(true);
+                if (!clearStatus) {
+                    fetchStatus(savedKey);
+                }
+            } else {
+                keyInput.value = '';
+                setKeyMode(false);
+                if (clearStatus) {
+                    hideStatus();
+                }
+            }
+        }
+
+        function hideStatus() {
+            statusCard.classList.add('hidden');
+            if (countdownInterval) {
+                clearInterval(countdownInterval);
+                countdownInterval = null;
+            }
+        }
+
+        function showStatus(title, message, extra) {
+            statusCard.classList.remove('hidden');
+            statusTitle.textContent = title;
+            statusTitle.className = 'status-title';
+            statusMessage.textContent = message || '';
+            statusMessage.className = 'status-message';
+
+            statusExpiry.classList.add('hidden');
+            statusExpiry.textContent = '';
+            statusDetail.textContent = '';
+            statusKeyname.classList.add('hidden');
+            statusKeyname.textContent = '';
+
+            if (countdownInterval) {
+                clearInterval(countdownInterval);
+                countdownInterval = null;
+            }
+
+            if (extra) {
+                if (extra.cssClass) {
+                    statusTitle.className = 'status-title ' + extra.cssClass;
+                }
+                if (extra.keyName) {
+                    statusKeyname.textContent = 'Key: ' + extra.keyName;
+                    statusKeyname.classList.remove('hidden');
+                }
+                if (extra.expiresAt) {
+                    const expiresMs = extra.expiresAt * 1000;
+                    const updateExpiry = function() {
+                        const now = Date.now();
+                        const diff = Math.max(0, expiresMs - now);
+                        const totalSec = Math.floor(diff / 1000);
+                        if (totalSec <= 0) {
+                            statusExpiry.textContent = 'Expired';
+                            statusExpiry.className = 'status-expiry text-red';
+                            clearInterval(countdownInterval);
+                            countdownInterval = null;
+                            return;
+                        }
+                        const h = Math.floor(totalSec / 3600);
+                        const m = Math.floor((totalSec % 3600) / 60);
+                        const s = totalSec % 60;
+                        const pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+                        statusExpiry.textContent = h + 'h ' + pad(m) + 'm ' + pad(s) + 's';
+                        statusExpiry.className = 'status-expiry text-green';
+                        statusExpiry.classList.remove('hidden');
+                    };
+                    updateExpiry();
+                    countdownInterval = setInterval(updateExpiry, 1000);
+
+                    if (extra.detail) {
+                        statusDetail.textContent = extra.detail;
+                    }
+                }
+            }
+        }
+
+        async function apiPost(url, body) {
+            const resp = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: body
+            });
+            return await resp.json();
+        }
+
+        async function fetchIP() {
+            try {
+                const data = await apiPost('/pwa/status', '');
+                clientIp.textContent = data.client_ip || '—';
+            } catch(e) {
+                clientIp.textContent = 'Unavailable';
+            }
+        }
+
+        async function fetchStatus(key) {
+            try {
+                const data = await apiPost('/pwa/status', 'key=' + encodeURIComponent(key));
+                clientIp.textContent = data.client_ip || clientIp.textContent;
+
+                if (data.error === 'invalid_key') {
+                    showStatus('Invalid Key', 'The provided key is not valid.', { cssClass: 'text-red' });
+                    return;
+                }
+
+                if (data.authorized) {
+                    const expiresAt = data.expires_at ? new Date(data.expires_at).getTime() / 1000 : 0;
+                    const untilTime = data.expires_at ? new Date(data.expires_at).toLocaleTimeString() : '';
+                    showStatus('Authorized', 'IP is authorized', {
+                        cssClass: 'text-green',
+                        expiresAt: expiresAt,
+                        detail: 'until ' + untilTime,
+                        keyName: data.key_name
+                    });
+                    showAuthButton('authorized');
+                } else {
+                    showStatus('Not Authorized', 'Authorize your IP using the button below.', {
+                        cssClass: 'text-gray',
+                        keyName: data.key_name
+                    });
+                    showAuthButton('authorize');
+                }
+            } catch(e) {
+                showStatus('Network Error', 'Could not reach the server.', { cssClass: 'text-red' });
+            }
+        }
+
+        async function doAuth(key) {
+            loading.classList.remove('hidden');
+            authBtn.disabled = true;
+
+            try {
+                const data = await apiPost('/pwa/auth', 'key=' + encodeURIComponent(key));
+                clientIp.textContent = data.client_ip || clientIp.textContent;
+
+                if (data.error === 'rate_limited') {
+                    showStatus('Rate Limited', 'Too many requests. Please wait.', { cssClass: 'text-red' });
+                    return;
+                }
+                if (data.error === 'invalid_key') {
+                    showStatus('Invalid Key', 'The provided key is not valid.', { cssClass: 'text-red' });
+                    return;
+                }
+                if (data.error) {
+                    showStatus('Error', data.message || 'An error occurred.', { cssClass: 'text-red' });
+                    return;
+                }
+
+                if (data.authorized) {
+                    const expiresAt = data.expires_at ? new Date(data.expires_at).getTime() / 1000 : 0;
+                    const untilTime = data.expires_at ? new Date(data.expires_at).toLocaleTimeString() : '';
+                    showStatus('Authorized', data.message || 'IP is authorized', {
+                        cssClass: 'text-green',
+                        expiresAt: expiresAt,
+                        detail: 'until ' + untilTime,
+                        keyName: data.key_name
+                    });
+                    showAuthButton('authorized');
+                }
+            } catch(e) {
+                showStatus('Network Error', 'Could not reach the server.', { cssClass: 'text-red' });
+            } finally {
+                loading.classList.add('hidden');
+                authBtn.disabled = (savedKey === null);
+            }
+        }
+
+        keyBtn.addEventListener('click', function() {
+            if (savedKey) {
+                localStorage.removeItem(LS_KEY);
+                savedKey = null;
+                keyInput.value = '';
+                setKeyMode(false);
+                showAuthButton('authorize');
+                hideStatus();
+            } else {
+                const val = keyInput.value.trim();
+                if (!val) return;
+                localStorage.setItem(LS_KEY, val);
+                savedKey = val;
+                setKeyMode(true);
+                fetchStatus(val);
+            }
+        });
+
+        authBtn.addEventListener('click', function() {
+            const key = savedKey || keyInput.value.trim();
+            if (!key) return;
+            if (!savedKey) {
+                localStorage.setItem(LS_KEY, key);
+                savedKey = key;
+                setKeyMode(true);
+            }
+            doAuth(key);
+        });
+
+        reauthBtn.addEventListener('click', function() {
+            if (!savedKey) return;
+            doAuth(savedKey);
+        });
+
+        revokeBtn.addEventListener('click', async function() {
+            if (!savedKey) return;
+            loading.classList.remove('hidden');
+            try {
+                const data = await apiPost('/pwa/revoke', 'key=' + encodeURIComponent(savedKey));
+                clientIp.textContent = data.client_ip || clientIp.textContent;
+                if (data.status === 'revoked') {
+                    showStatus('Not Authorized', 'Authorization has been removed.', {
+                        cssClass: 'text-gray',
+                        keyName: data.key_name
+                    });
+                    showAuthButton('authorize');
+                } else if (data.error) {
+                    showStatus('Error', data.message || 'Failed to remove authorization.', {
+                        cssClass: 'text-red'
+                    });
+                }
+            } catch(e) {
+                showStatus('Network Error', 'Could not reach the server.', { cssClass: 'text-red' });
+            } finally {
+                loading.classList.add('hidden');
+            }
+        });
+
+        refreshBtn.addEventListener('click', function() {
+            hideStatus();
+            clientIp.textContent = '—';
+            if (savedKey) {
+                fetchStatus(savedKey);
+            } else {
+                fetchIP();
+            }
+        });
+
+        keyInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                keyBtn.click();
+            }
+        });
+
+        // Init
+        fetchIP();
+        refreshUI(false);
+    </script>
+</body>
+</html>

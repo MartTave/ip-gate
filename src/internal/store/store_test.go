@@ -15,7 +15,7 @@ func resetTestState() {
 	PermanentKeyMaxIPs = 1
 	RequestTTLMinutes = 5
 	RateLimitWindowSec = 60
-	RateLimitMaxRequests = 3
+	RateLimitMaxRequests = 20
 	MaxTTL = 48 * time.Hour
 }
 
@@ -494,14 +494,24 @@ func TestCheckRateLimit(t *testing.T) {
 		t.Error("Expected second request to pass rate limit")
 	}
 
-	// Third request - should pass (limit is 3)
+	// Third request - should pass (limit is 5)
 	if !CheckRateLimit("1.2.3.4") {
 		t.Error("Expected third request to pass rate limit")
 	}
 
-	// Fourth request - should fail
+	// Fourth request - should pass (limit is 5)
+	if !CheckRateLimit("1.2.3.4") {
+		t.Error("Expected fourth request to pass rate limit")
+	}
+
+	// Fifth request - should pass (limit is 5)
+	if !CheckRateLimit("1.2.3.4") {
+		t.Error("Expected fifth request to pass rate limit")
+	}
+
+	// Sixth request - should fail
 	if CheckRateLimit("1.2.3.4") {
-		t.Error("Expected fourth request to fail rate limit")
+		t.Error("Expected sixth request to fail rate limit")
 	}
 }
 

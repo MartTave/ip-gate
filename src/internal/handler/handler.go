@@ -3,11 +3,15 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
+	"ttl-allow-service/src/internal/assets"
 	"ttl-allow-service/src/internal/gui"
+	"ttl-allow-service/src/internal/pwa"
 	"ttl-allow-service/src/internal/store"
 )
 
@@ -206,54 +210,252 @@ func handleAllowPost(w http.ResponseWriter, r *http.Request) {
 	// No redirect - AJAX handles the UI update
 }
 
-// KeyAuthHandler handles GET /key-auth?key=... (permanent key authentication)
-func KeyAuthHandler(w http.ResponseWriter, r *http.Request) {
-
+// PWAHandler handles GET /pwa (PWA status page)
+func PWAHandler(w http.ResponseWriter, r *http.Request) {
+	ip := ExtractClientIPFromHeaders(r)
+	if ip == "" {
+		http.Error(w, "Could not determine client IP", http.StatusForbidden)
+		return
+	}
+	if !store.CheckRateLimit(ip) {
+		writeAPIError(w, ErrRateLimited, map[string]interface{}{"client_ip": ip})
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	// Get client IP
+	if !store.HasPermanentKeys() {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, assets.NoKeysHTML)
+		return
+	}
+	pwa.RenderPWA(w)
+}
+
+// writeKeysDisabled sends a JSON error response when no keys are configured
+func writeKeysDisabled(w http.ResponseWriter) {
+	writeAPIError(w, ErrNotConfigured, nil)
+}
+
+// PWAStatusHandler handles POST /pwa/status (get authorization status, key in body)
+func PWAStatusHandler(w http.ResponseWriter, r *http.Request) {
 	ip := ExtractClientIPFromHeaders(r)
-	// Apply rate limiting (same as /knock)
+	if ip == "" {
+		writeAPIError(w, ErrNoIP, nil)
+		return
+	}
 	if !store.CheckRateLimit(ip) {
-		http.Error(w, "Too many requests", http.StatusTooManyRequests)
+		writeAPIError(w, ErrRateLimited, map[string]interface{}{"client_ip": ip})
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeAPIError(w, ErrMethodNotAllowed, nil)
+		return
+	}
+	if !store.HasPermanentKeys() {
+		writeKeysDisabled(w)
 		return
 	}
 
-	// Extract key from query parameter
-	key := r.URL.Query().Get("key")
+	if err := r.ParseForm(); err != nil {
+		writeAPIError(w, ErrInvalidForm, nil)
+		return
+	}
+
+	key := r.FormValue("key")
+
+	// No key provided
 	if key == "" {
-		http.Error(w, "Missing key parameter", http.StatusBadRequest)
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"client_ip": ip,
+		})
 		return
 	}
 
 	// Validate key
 	name, exists := store.PermanentKeys[key]
 	if !exists {
-		http.Error(w, "Invalid key", http.StatusUnauthorized)
+		// Invalid key
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"client_ip": ip,
+			"key_valid": false,
+			"error":     "invalid_key",
+		})
 		return
 	}
 
+	// Valid key
+
+	// Check auth status
+	status := store.GetIPAuthStatus(ip)
+	resp := map[string]interface{}{
+		"client_ip": ip,
+		"key_valid": true,
+		"key_name":  name,
+	}
+	if status.Authorized {
+		resp["authorized"] = true
+		resp["expires_at"] = status.ExpiresAt.Format(time.RFC3339)
+		resp["expires_in_seconds"] = int(time.Until(status.ExpiresAt).Seconds())
+	} else {
+		resp["authorized"] = false
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// PWAAuthHandler handles POST /pwa/auth (authorize current IP using key in body)
+func PWAAuthHandler(w http.ResponseWriter, r *http.Request) {
+	ip := ExtractClientIPFromHeaders(r)
 	if ip == "" {
-		http.Error(w, "Could not determine client IP", http.StatusBadRequest)
+		writeAPIError(w, ErrNoIP, nil)
+		return
+	}
+	if !store.CheckRateLimit(ip) {
+		writeAPIError(w, ErrRateLimited, map[string]interface{}{"client_ip": ip})
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeAPIError(w, ErrMethodNotAllowed, nil)
+		return
+	}
+	if !store.HasPermanentKeys() {
+		writeKeysDisabled(w)
 		return
 	}
 
-	// Check if already approved
-	if store.CheckIPAllowed(ip) {
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "already allowed")
+	if err := r.ParseForm(); err != nil {
+		writeAPIError(w, ErrInvalidForm, nil)
 		return
 	}
 
-	// Approve IP
+	key := r.FormValue("key")
+	if key == "" {
+		writeAPIError(w, ErrMissingKey, map[string]interface{}{
+			"authorized": false,
+			"client_ip":  ip,
+		})
+		return
+	}
+
+	name, exists := store.PermanentKeys[key]
+	if !exists {
+		writeAPIError(w, ErrInvalidKey, map[string]interface{}{
+			"authorized": false,
+			"client_ip":  ip,
+		})
+		return
+	}
+
+	// Authorize or re-authorize via key
 	err := store.ApproveIPByKey(ip, name)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeAPIError(w, ErrApprovalFailed, map[string]interface{}{
+			"authorized": false,
+			"client_ip":  ip,
+			"message":    err.Error(),
+		})
 		return
 	}
 
+	status := store.GetIPAuthStatus(ip)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":              "now_authorized",
+		"authorized":          true,
+		"expires_at":          status.ExpiresAt.Format(time.RFC3339),
+		"expires_in_seconds":  int(time.Until(status.ExpiresAt).Seconds()),
+		"key_name":            name,
+		"client_ip":           ip,
+		"message":             fmt.Sprintf("Authorized via key: %s", name),
+	})
+}
+
+// PWARevokeHandler handles POST /pwa/revoke (remove authorization for current IP)
+func PWARevokeHandler(w http.ResponseWriter, r *http.Request) {
+	ip := ExtractClientIPFromHeaders(r)
+	if ip == "" {
+		writeAPIError(w, ErrNoIP, nil)
+		return
+	}
+	if !store.CheckRateLimit(ip) {
+		writeAPIError(w, ErrRateLimited, map[string]interface{}{"client_ip": ip})
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeAPIError(w, ErrMethodNotAllowed, nil)
+		return
+	}
+	if !store.HasPermanentKeys() {
+		writeKeysDisabled(w)
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		writeAPIError(w, ErrInvalidForm, nil)
+		return
+	}
+
+	key := r.FormValue("key")
+	if key == "" {
+		writeAPIError(w, ErrMissingKey, map[string]interface{}{
+			"authorized": false,
+			"client_ip":  ip,
+		})
+		return
+	}
+
+	name, exists := store.PermanentKeys[key]
+	if !exists {
+		writeAPIError(w, ErrInvalidKey, map[string]interface{}{
+			"authorized": false,
+			"client_ip":  ip,
+		})
+		return
+	}
+
+	if err := store.RevokeIPByKey(ip, name); err != nil {
+		writeAPIError(w, ErrRevokeFailed, map[string]interface{}{
+			"authorized": false,
+			"client_ip":  ip,
+			"message":    err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":     "revoked",
+		"authorized": false,
+		"client_ip":  ip,
+		"key_name":   name,
+		"message":    "Authorization removed",
+	})
+}
+
+// ManifestHandler serves the PWA manifest.json
+func ManifestHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "allowed via key: %s", name)
+	io.WriteString(w, assets.ManifestJSON)
+}
+
+// ServiceWorkerHandler serves the service worker script
+func ServiceWorkerHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/javascript")
+	w.WriteHeader(http.StatusOK)
+	io.WriteString(w, assets.ServiceWorkerJS)
+}
+
+// PwaIconHandler serves the PWA SVG icon
+func PwaIconHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "image/svg+xml")
+	w.WriteHeader(http.StatusOK)
+	io.WriteString(w, assets.PwaIconSVG)
+}
+
+// writeJSON is a helper to write a JSON response
+func writeJSON(w http.ResponseWriter, statusCode int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(data)
 }
