@@ -11,6 +11,7 @@ import (
 
 	"ttl-allow-service/src/internal/assets"
 	"ttl-allow-service/src/internal/gui"
+	"ttl-allow-service/src/internal/logger"
 	"ttl-allow-service/src/internal/pwa"
 	"ttl-allow-service/src/internal/store"
 )
@@ -62,6 +63,12 @@ func AuthHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !store.CheckAuthRateLimit(ip) {
+		logger.Warn("ip_rate_limited", "ip", ip, "path", "/auth")
+		http.Error(w, "Too many requests", http.StatusTooManyRequests)
+		return
+	}
+
 	if store.CheckIPAllowed(ip) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "allowed")
@@ -86,6 +93,7 @@ func KnockHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Rate limiting (applied to all /knock requests)
 	if !store.CheckRateLimit(ip) {
+		logger.Warn("ip_rate_limited", "ip", ip, "path", "/knock")
 		http.Error(w, "Too many requests", http.StatusTooManyRequests)
 		return
 	}
@@ -104,6 +112,7 @@ func KnockHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logger.Info("ip_knocked", "ip", ip)
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "request received")
 }
@@ -190,6 +199,8 @@ func handleAllowPost(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		adminIP := ExtractClientIPFromHeaders(r)
+		logger.Info("ip_allowed", "target_ip", req.IP, "admin_ip", adminIP, "ttl", req.TTL)
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "allowed")
 
@@ -218,6 +229,7 @@ func PWAHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !store.CheckRateLimit(ip) {
+		logger.Warn("ip_rate_limited", "ip", ip, "path", "/pwa")
 		writeAPIError(w, ErrRateLimited, map[string]interface{}{"client_ip": ip})
 		return
 	}
@@ -247,6 +259,7 @@ func PWAStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !store.CheckRateLimit(ip) {
+		logger.Warn("ip_rate_limited", "ip", ip, "path", "/pwa/status")
 		writeAPIError(w, ErrRateLimited, map[string]interface{}{"client_ip": ip})
 		return
 	}
@@ -313,6 +326,7 @@ func PWAAuthHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !store.CheckRateLimit(ip) {
+		logger.Warn("ip_rate_limited", "ip", ip, "path", "/pwa/auth")
 		writeAPIError(w, ErrRateLimited, map[string]interface{}{"client_ip": ip})
 		return
 	}
@@ -359,6 +373,8 @@ func PWAAuthHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logger.Info("ip_allowed_by_key", "target_ip", ip, "key_name", name)
+
 	status := store.GetIPAuthStatus(ip)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":              "now_authorized",
@@ -379,6 +395,7 @@ func PWARevokeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !store.CheckRateLimit(ip) {
+		logger.Warn("ip_rate_limited", "ip", ip, "path", "/pwa/revoke")
 		writeAPIError(w, ErrRateLimited, map[string]interface{}{"client_ip": ip})
 		return
 	}

@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"ttl-allow-service/src/internal/handler"
+	"ttl-allow-service/src/internal/logger"
 	"ttl-allow-service/src/internal/store"
 	"ttl-allow-service/src/internal/worker"
 )
@@ -14,11 +15,16 @@ func main() {
 	store.LoadEnv()
 
 	// Startup
-	log.Println("Starting TTL IP Allow Service...")
-	log.Printf("Rate limit: %d requests per %d seconds", store.RateLimitMaxRequests, store.RateLimitWindowSec)
+	logger.Info("starting_server")
+	logger.Info("rate_limit_config",
+		"knock_max", store.RateLimitMaxRequests,
+		"knock_window_sec", store.RateLimitWindowSec,
+		"auth_max", store.AuthRateLimitMaxRequests,
+		"auth_window_sec", store.AuthRateLimitWindowSec,
+	)
 
 	if !store.HasPermanentKeys() {
-		log.Println("WARNING: No permanent keys loaded — PWA endpoints (/pwa, /pwa/status, /pwa/auth, /pwa/revoke) are disabled")
+		logger.Warn("no_permanent_keys", "info", "PWA endpoints disabled")
 	}
 
 	// Start background worker
@@ -38,7 +44,7 @@ func main() {
 	http.HandleFunc("/pwa/pwa-icon.svg", handler.PwaIconHandler)
 
 	// Start server
-	log.Printf("Server listening on :%s", store.ServerPort)
+	logger.Info("server_listening", "port", store.ServerPort)
 	if err := http.ListenAndServe(":"+store.ServerPort, nil); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}

@@ -1,9 +1,9 @@
 package worker
 
 import (
-	"log"
 	"time"
 
+	"ttl-allow-service/src/internal/logger"
 	"ttl-allow-service/src/internal/store"
 )
 
@@ -12,7 +12,7 @@ func StartBackgroundWorker() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
-	log.Println("Background worker started (safety net, 5min interval)")
+	logger.Info("background_worker_started", "interval", "5m")
 	for range ticker.C {
 		store.CleanupExpired()
 	}

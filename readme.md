@@ -20,13 +20,19 @@ All state is in-memory; restarts clear everything (fail-safe deny-by-default).
 |----------|-------------|---------|
 | `MAX_TTL` | Maximum allowed TTL for approvals (generates dropdown options) | `48h` |
 | `REQUEST_TTL_MINUTES` | How long knock requests stay pending | `5` |
-| `RATE_LIMIT_WINDOW_SEC` | Rate limit window for `/knock` | `60` |
-| `RATE_LIMIT_MAX_REQUESTS` | Max knock requests per window per IP | `3` |
+| `RATE_LIMIT_WINDOW_SEC` | Rate limit window for `/knock` and PWA endpoints | `60` |
+| `RATE_LIMIT_MAX_REQUESTS` | Max requests per window per IP for `/knock` and PWA | `20` |
+| `AUTH_RATE_LIMIT_WINDOW_SEC` | Rate limit window for `/auth` | `60` |
+| `AUTH_RATE_LIMIT_MAX_REQUESTS` | Max requests per window per IP for `/auth` | `1000` |
 | `PORT` | HTTP server port | `8080` |
 | `WORKER_INTERVAL_MINUTES` | Background cleanup worker interval | `5` |
 | `PERMANENT_KEYS` | Comma-separated `key:name` pairs for key-based auth | (empty) |
 | `PERMANENT_KEY_AUTH_TTL` | TTL for key-authenticated approvals | `4h` |
 | `PERMANENT_KEY_MAX_IPS` | Max IPs allowed per permanent key (0=unlimited) | `1` |
+| `LOG_FILE` | Path to log file (empty = stdout only) | (empty) |
+| `LOG_MAX_SIZE_MB` | Max MB per log file before rotation | `10` |
+| `LOG_MAX_AGE_DAYS` | Delete rotated logs older than N days | `7` |
+| `LOG_MAX_FILES` | Max rotated log files to keep | `5` |
 
 ### TTL Options
 
@@ -96,33 +102,45 @@ curl -X POST http://localhost:8080/allow \
 ```
 
 ### `GET /auth`
-Auth endpoint for Caddy. Returns 200 if IP is allowed, 403 otherwise.
+Auth endpoint for Caddy. Returns 200 if IP is allowed, 403 otherwise. Rate-limited separately with a generous threshold (1000 req/60s by default).
 
 ```bash
 curl http://localhost:8080/auth
 ```
 
-### `GET /key-auth?key=<key>`
-Permanent key authentication endpoint. Validates the key against configured `PERMANENT_KEYS`, and if valid, approves the requesting IP for a configurable duration (`PERMANENT_KEY_AUTH_TTL`).
+### `POST /pwa/status`
+Check authorization status for an IP using a permanent key.
 
-**Features:**
-- Rate limiting (same as `/knock` endpoint)
-- IP rotation: When `PERMANENT_KEY_MAX_IPS` is reached, oldest approved IP is revoked
-- Warning logged if key is shorter than 64 characters
-
-**Parameters:**
-- `key` - The permanent key to authenticate with
+**Parameters (form-encoded):**
+- `key` - The permanent key
 
 **Responses:**
-- `200 allowed via key: <name>` - IP approved successfully
-- `200 already allowed` - IP was already approved
-- `401 Invalid key` - Key not found in configuration
-- `400 Missing key parameter` - No key provided
-- `429 Too Many Requests` - Rate limit exceeded
+- `200` with JSON containing `authorized`, `key_valid`, `key_name`, `expires_at`
+
+### `POST /pwa/auth`
+Authorize the requesting IP using a permanent key.
+
+**Parameters (form-encoded):**
+- `key` - The permanent key
+
+**Features:**
+- Rate limited
+- IP rotation: When `PERMANENT_KEY_MAX_IPS` is reached, oldest approved IP is revoked
+
+**Responses:**
+- `200` with JSON: `status: "now_authorized"`, `key_name`, `expires_at`
+- `401` Invalid key
+- `429` Rate limit exceeded
 
 ```bash
-curl "http://localhost:8080/key-auth?key=abc123"
+curl -X POST http://localhost:8080/pwa/auth -d "key=abc123"
 ```
+
+### `POST /pwa/revoke`
+Remove authorization for the requesting IP using a permanent key.
+
+**Parameters (form-encoded):**
+- `key` - The permanent key
 
 **Admin UI displays:**
 - **Approved by**: "Manual" or "Automatic (key-name)"
@@ -185,10 +203,43 @@ docker build -t ttl-allow-service .
 docker run -p 8080:8080 -e MAX_TTL=24h ttl-allow-service
 ```
 
+## Logging
+
+The service uses structured JSON logging via Go's `log/slog`. Each log line is a JSON object written to stdout and optionally to a rotating file.
+
+### Log Format
+
+```json
+{"time":"2026-05-15T12:34:56Z","level":"INFO","msg":"ip_knocked","ip":"10.0.0.1"}
+{"time":"2026-05-15T12:34:57Z","level":"WARN","msg":"ip_rate_limited","ip":"10.0.0.1","path":"/knock"}
+{"time":"2026-05-15T12:35:00Z","level":"INFO","msg":"ip_allowed","target_ip":"10.0.0.1","admin_ip":"192.168.1.100","ttl":"1h"}
+{"time":"2026-05-15T12:35:01Z","level":"INFO","msg":"ip_allowed_by_key","target_ip":"10.0.0.2","key_name":"office-vpn"}
+```
+
+### Security Events Logged
+
+| Event | Level | When |
+|---|---|---|
+| `ip_rate_limited` | WARN | An IP exceeded the rate limit on any endpoint |
+| `ip_knocked` | INFO | A new knock request was created |
+| `ip_allowed` | INFO | An admin approved an IP via `/allow` |
+| `ip_allowed_by_key` | INFO | An IP was authorized via a permanent key |
+
+### Log Rotation
+
+When `LOG_FILE` is set, the service rotates logs automatically:
+1. The active file grows until it reaches `LOG_MAX_SIZE_MB` (default 10MB)
+2. It's then renamed with a timestamp suffix (e.g., `app.log.20260515-120000`)
+3. A fresh file is created
+4. Rotated files older than `LOG_MAX_AGE_DAYS` (default 7) are deleted
+5. At most `LOG_MAX_FILES` (default 5) rotated files are kept
+
+Maximum disk usage: 1 active × 10MB + 5 rotated × 10MB = ~60MB.
+
 ## Security Considerations
 
 - **`/allow` endpoint** should be protected by external authentication (Authelia, OAuth, etc.) via Caddy
 - **`/knock`** is public but rate-limited
-- **`/auth`** is for internal Caddy communication; consider binding to localhost only
+- **`/auth`** is for internal Caddy communication; rate-limited generously (1000 req/60s by default)
 - All state is in-memory; **restart = deny all** (fail-safe design)
 - No persistence by design - ephemeral access control

@@ -2,7 +2,6 @@ package store
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"sort"
@@ -10,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ttl-allow-service/src/internal/logger"
 )
 
 // IPState represents the state of an IP
@@ -240,9 +241,12 @@ var (
 	PermanentKeyIPs      map[string]map[string]bool
 
 	// Rate limiter (per-IP sliding window)
-	RateLimitWindowSec   int
-	RateLimitMaxRequests int
-	rateLimiter          = make(map[string][]time.Time)
+	RateLimitWindowSec     int
+	RateLimitMaxRequests   int
+	rateLimiter            = make(map[string][]time.Time)
+	AuthRateLimitWindowSec   int
+	AuthRateLimitMaxRequests int
+	authRateLimiter          = make(map[string][]time.Time)
 )
 
 // LoadEnv loads environment variables with defaults
@@ -276,6 +280,26 @@ func LoadEnv() {
 			RateLimitMaxRequests = n
 		} else {
 			log.Printf("Invalid RATE_LIMIT_MAX_REQUESTS: %v, using default 20", err)
+		}
+	}
+
+	// AUTH_RATE_LIMIT_WINDOW_SEC (default 60)
+	AuthRateLimitWindowSec = 60
+	if v := os.Getenv("AUTH_RATE_LIMIT_WINDOW_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			AuthRateLimitWindowSec = n
+		} else {
+			log.Printf("Invalid AUTH_RATE_LIMIT_WINDOW_SEC: %v, using default 60", err)
+		}
+	}
+
+	// AUTH_RATE_LIMIT_MAX_REQUESTS (default 1000)
+	AuthRateLimitMaxRequests = 1000
+	if v := os.Getenv("AUTH_RATE_LIMIT_MAX_REQUESTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			AuthRateLimitMaxRequests = n
+		} else {
+			log.Printf("Invalid AUTH_RATE_LIMIT_MAX_REQUESTS: %v, using default 1000", err)
 		}
 	}
 
@@ -348,20 +372,51 @@ func LoadEnv() {
 		MaxTTL = 48 * time.Hour
 	}
 
-	// LOG_FILE (optional, enables dual stdout+file logging)
-	if v := os.Getenv("LOG_FILE"); v != "" {
-		f, err := os.OpenFile(v, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			log.Printf("WARNING: Could not open LOG_FILE %s: %v", v, err)
+	// LOG_* configuration for structured logger
+	logFilePath := os.Getenv("LOG_FILE")
+	logMaxSizeMB := 10
+	if v := os.Getenv("LOG_MAX_SIZE_MB"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			logMaxSizeMB = n
 		} else {
-			log.SetOutput(io.MultiWriter(os.Stdout, f))
-			log.Printf("Logging to file: %s", v)
+			log.Printf("Invalid LOG_MAX_SIZE_MB: %v, using default 10", err)
 		}
+	}
+	logMaxAgeDays := 7
+	if v := os.Getenv("LOG_MAX_AGE_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			logMaxAgeDays = n
+		} else {
+			log.Printf("Invalid LOG_MAX_AGE_DAYS: %v, using default 7", err)
+		}
+	}
+	logMaxFiles := 5
+	if v := os.Getenv("LOG_MAX_FILES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			logMaxFiles = n
+		} else {
+			log.Printf("Invalid LOG_MAX_FILES: %v, using default 5", err)
+		}
+	}
+
+	// Initialize structured logger (JSON to stdout + optional rotating file)
+	if err := logger.Init(logger.Config{
+		FilePath:   logFilePath,
+		MaxSizeMB:  logMaxSizeMB,
+		MaxAgeDays: logMaxAgeDays,
+		MaxFiles:   logMaxFiles,
+	}); err != nil {
+		log.Printf("WARNING: Logger initialization failed: %v", err)
 	}
 
 	// Log the number of TTL options available
 	options := GetTTLOptions()
-	log.Printf("MAX_TTL set to %s, generated %d TTL options", MaxTTL, len(options))
+	logger.Info("config_loaded",
+		"max_ttl", MaxTTL.String(),
+		"ttl_options", len(options),
+		"rate_limit", fmt.Sprintf("%d/%ds", RateLimitMaxRequests, RateLimitWindowSec),
+		"auth_rate_limit", fmt.Sprintf("%d/%ds", AuthRateLimitMaxRequests, AuthRateLimitWindowSec),
+	)
 }
 
 // GetTTLOptions returns the allowed TTL values sorted by duration
@@ -430,7 +485,7 @@ func CleanupExpired() {
 		}
 	}
 
-	// Clean rate limiter
+	// Clean rate limiters
 	for ipStr, timestamps := range rateLimiter {
 		var valid []time.Time
 		window := time.Duration(RateLimitWindowSec) * time.Second
@@ -443,6 +498,20 @@ func CleanupExpired() {
 			delete(rateLimiter, ipStr)
 		} else {
 			rateLimiter[ipStr] = valid
+		}
+	}
+	for ipStr, timestamps := range authRateLimiter {
+		var valid []time.Time
+		window := time.Duration(AuthRateLimitWindowSec) * time.Second
+		for _, t := range timestamps {
+			if now.Sub(t) < window {
+				valid = append(valid, t)
+			}
+		}
+		if len(valid) == 0 {
+			delete(authRateLimiter, ipStr)
+		} else {
+			authRateLimiter[ipStr] = valid
 		}
 	}
 }
@@ -475,6 +544,37 @@ func CheckRateLimit(ip string) bool {
 
 	valid = append(valid, now)
 	rateLimiter[ip] = valid
+	return true
+}
+
+// CheckAuthRateLimit returns false if IP has exceeded the auth rate limit (generous, for /auth endpoint)
+func CheckAuthRateLimit(ip string) bool {
+	mu.Lock()
+	defer mu.Unlock()
+
+	now := time.Now()
+	window := time.Duration(AuthRateLimitWindowSec) * time.Second
+	maxRequests := AuthRateLimitMaxRequests
+
+	timestamps, exists := authRateLimiter[ip]
+	if !exists {
+		timestamps = []time.Time{}
+	}
+
+	var valid []time.Time
+	for _, t := range timestamps {
+		if now.Sub(t) < window {
+			valid = append(valid, t)
+		}
+	}
+
+	if len(valid) >= maxRequests {
+		authRateLimiter[ip] = valid
+		return false
+	}
+
+	valid = append(valid, now)
+	authRateLimiter[ip] = valid
 	return true
 }
 
