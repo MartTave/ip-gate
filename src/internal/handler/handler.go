@@ -164,9 +164,7 @@ func handleAllowPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// Parse form data
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "Invalid form data", http.StatusBadRequest)
+		if !requireParseForm(r, w) {
 			return
 		}
 		req.IP = r.FormValue("ip")
@@ -223,14 +221,11 @@ func handleAllowPost(w http.ResponseWriter, r *http.Request) {
 
 // PWAHandler handles GET /pwa (PWA status page)
 func PWAHandler(w http.ResponseWriter, r *http.Request) {
-	ip := ExtractClientIPFromHeaders(r)
-	if ip == "" {
-		http.Error(w, "Could not determine client IP", http.StatusForbidden)
+	ip, ok := requireClientIP(r, w)
+	if !ok {
 		return
 	}
-	if !store.CheckRateLimit(ip) {
-		logger.Warn("ip_rate_limited", "ip", ip, "path", "/pwa")
-		writeAPIError(w, ErrRateLimited, map[string]interface{}{"client_ip": ip})
+	if !requireRateLimit(ip, "/pwa", w) {
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -253,33 +248,25 @@ func writeKeysDisabled(w http.ResponseWriter) {
 
 // PWAStatusHandler handles POST /pwa/status (get authorization status, key in body)
 func PWAStatusHandler(w http.ResponseWriter, r *http.Request) {
-	ip := ExtractClientIPFromHeaders(r)
-	if ip == "" {
-		writeAPIError(w, ErrNoIP, nil)
+	ip, ok := requireClientIP(r, w)
+	if !ok {
 		return
 	}
-	if !store.CheckRateLimit(ip) {
-		logger.Warn("ip_rate_limited", "ip", ip, "path", "/pwa/status")
-		writeAPIError(w, ErrRateLimited, map[string]interface{}{"client_ip": ip})
+	if !requireRateLimit(ip, "/pwa/status", w) {
 		return
 	}
-	if r.Method != http.MethodPost {
-		writeAPIError(w, ErrMethodNotAllowed, nil)
+	if !requirePOST(r, w) {
 		return
 	}
-	if !store.HasPermanentKeys() {
-		writeKeysDisabled(w)
+	if !requireKeysActivated(w) {
 		return
 	}
-
-	if err := r.ParseForm(); err != nil {
-		writeAPIError(w, ErrInvalidForm, nil)
+	if !requireParseForm(r, w) {
 		return
 	}
 
 	key := r.FormValue("key")
 
-	// No key provided
 	if key == "" {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"client_ip": ip,
@@ -287,19 +274,14 @@ func PWAStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate key
-	name, exists := store.PermanentKeys[key]
-	if !exists {
-		// Invalid key
-		writeAPIError(w, ErrInvalidKey, map[string]interface{}{
-			"client_ip": ip,
-			"key_valid": false,
-			"error":     "invalid_key",
-		})
+	name, ok := lookupValidKey(key, w, map[string]interface{}{
+		"client_ip": ip,
+		"key_valid": false,
+		"error":     "invalid_key",
+	})
+	if !ok {
 		return
 	}
-
-	// Valid key
 
 	// Check auth status
 	status := store.GetIPAuthStatus(ip)
@@ -320,45 +302,32 @@ func PWAStatusHandler(w http.ResponseWriter, r *http.Request) {
 
 // PWAAuthHandler handles POST /pwa/auth (authorize current IP using key in body)
 func PWAAuthHandler(w http.ResponseWriter, r *http.Request) {
-	ip := ExtractClientIPFromHeaders(r)
-	if ip == "" {
-		writeAPIError(w, ErrNoIP, nil)
+	ip, ok := requireClientIP(r, w)
+	if !ok {
 		return
 	}
-	if !store.CheckRateLimit(ip) {
-		logger.Warn("ip_rate_limited", "ip", ip, "path", "/pwa/auth")
-		writeAPIError(w, ErrRateLimited, map[string]interface{}{"client_ip": ip})
+	if !requireRateLimit(ip, "/pwa/auth", w) {
 		return
 	}
-	if r.Method != http.MethodPost {
-		writeAPIError(w, ErrMethodNotAllowed, nil)
+	if !requirePOST(r, w) {
 		return
 	}
-	if !store.HasPermanentKeys() {
-		writeKeysDisabled(w)
+	if !requireKeysActivated(w) {
 		return
 	}
-
-	if err := r.ParseForm(); err != nil {
-		writeAPIError(w, ErrInvalidForm, nil)
+	if !requireParseForm(r, w) {
 		return
 	}
 
-	key := r.FormValue("key")
-	if key == "" {
-		writeAPIError(w, ErrMissingKey, map[string]interface{}{
-			"authorized": false,
-			"client_ip":  ip,
-		})
+	key, ok := requireFormKey(r, w, ip)
+	if !ok {
 		return
 	}
-
-	name, exists := store.PermanentKeys[key]
-	if !exists {
-		writeAPIError(w, ErrInvalidKey, map[string]interface{}{
-			"authorized": false,
-			"client_ip":  ip,
-		})
+	name, ok := lookupValidKey(key, w, map[string]interface{}{
+		"authorized": false,
+		"client_ip":  ip,
+	})
+	if !ok {
 		return
 	}
 
@@ -389,45 +358,32 @@ func PWAAuthHandler(w http.ResponseWriter, r *http.Request) {
 
 // PWARevokeHandler handles POST /pwa/revoke (remove authorization for current IP)
 func PWARevokeHandler(w http.ResponseWriter, r *http.Request) {
-	ip := ExtractClientIPFromHeaders(r)
-	if ip == "" {
-		writeAPIError(w, ErrNoIP, nil)
+	ip, ok := requireClientIP(r, w)
+	if !ok {
 		return
 	}
-	if !store.CheckRateLimit(ip) {
-		logger.Warn("ip_rate_limited", "ip", ip, "path", "/pwa/revoke")
-		writeAPIError(w, ErrRateLimited, map[string]interface{}{"client_ip": ip})
+	if !requireRateLimit(ip, "/pwa/revoke", w) {
 		return
 	}
-	if r.Method != http.MethodPost {
-		writeAPIError(w, ErrMethodNotAllowed, nil)
+	if !requirePOST(r, w) {
 		return
 	}
-	if !store.HasPermanentKeys() {
-		writeKeysDisabled(w)
+	if !requireKeysActivated(w) {
 		return
 	}
-
-	if err := r.ParseForm(); err != nil {
-		writeAPIError(w, ErrInvalidForm, nil)
+	if !requireParseForm(r, w) {
 		return
 	}
 
-	key := r.FormValue("key")
-	if key == "" {
-		writeAPIError(w, ErrMissingKey, map[string]interface{}{
-			"authorized": false,
-			"client_ip":  ip,
-		})
+	key, ok := requireFormKey(r, w, ip)
+	if !ok {
 		return
 	}
-
-	name, exists := store.PermanentKeys[key]
-	if !exists {
-		writeAPIError(w, ErrInvalidKey, map[string]interface{}{
-			"authorized": false,
-			"client_ip":  ip,
-		})
+	name, ok := lookupValidKey(key, w, map[string]interface{}{
+		"authorized": false,
+		"client_ip":  ip,
+	})
+	if !ok {
 		return
 	}
 
@@ -468,6 +424,76 @@ func PwaIconHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/svg+xml")
 	w.WriteHeader(http.StatusOK)
 	io.WriteString(w, assets.PwaIconSVG)
+}
+
+// requireKeysActivated returns false if no permanent keys are configured.
+func requireKeysActivated(w http.ResponseWriter) bool {
+	if !store.HasPermanentKeys() {
+		writeKeysDisabled(w)
+		return false
+	}
+	return true
+}
+
+// requirePOST returns false if the request method is not POST.
+func requirePOST(r *http.Request, w http.ResponseWriter) bool {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, ErrMethodNotAllowed, nil)
+		return false
+	}
+	return true
+}
+
+// requireClientIP extracts the client IP and returns false if it's empty.
+func requireClientIP(r *http.Request, w http.ResponseWriter) (string, bool) {
+	ip := ExtractClientIPFromHeaders(r)
+	if ip == "" {
+		writeAPIError(w, ErrNoIP, nil)
+		return "", false
+	}
+	return ip, true
+}
+
+// requireRateLimit returns false if the IP is rate-limited.
+func requireRateLimit(ip, path string, w http.ResponseWriter) bool {
+	if !store.CheckRateLimit(ip) {
+		logger.Warn("ip_rate_limited", "ip", ip, "path", path)
+		writeAPIError(w, ErrRateLimited, map[string]interface{}{"client_ip": ip})
+		return false
+	}
+	return true
+}
+
+// requireParseForm returns false if the form cannot be parsed.
+func requireParseForm(r *http.Request, w http.ResponseWriter) bool {
+	if err := r.ParseForm(); err != nil {
+		writeAPIError(w, ErrInvalidForm, nil)
+		return false
+	}
+	return true
+}
+
+// requireFormKey extracts a non-empty "key" form value, writing an error if missing.
+func requireFormKey(r *http.Request, w http.ResponseWriter, ip string) (string, bool) {
+	key := r.FormValue("key")
+	if key == "" {
+		writeAPIError(w, ErrMissingKey, map[string]interface{}{
+			"authorized": false,
+			"client_ip":  ip,
+		})
+		return "", false
+	}
+	return key, true
+}
+
+// lookupValidKey looks up key in PermanentKeys, writing an error if not found.
+func lookupValidKey(key string, w http.ResponseWriter, extra map[string]interface{}) (string, bool) {
+	name, exists := store.PermanentKeys[key]
+	if !exists {
+		writeAPIError(w, ErrInvalidKey, extra)
+		return "", false
+	}
+	return name, true
 }
 
 // writeJSON is a helper to write a JSON response
