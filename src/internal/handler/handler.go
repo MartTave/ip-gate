@@ -291,7 +291,7 @@ func PWAStatusHandler(w http.ResponseWriter, r *http.Request) {
 	name, exists := store.PermanentKeys[key]
 	if !exists {
 		// Invalid key
-		writeJSON(w, http.StatusOK, map[string]interface{}{
+		writeAPIError(w, ErrInvalidKey, map[string]interface{}{
 			"client_ip": ip,
 			"key_valid": false,
 			"error":     "invalid_key",
