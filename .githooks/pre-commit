@@ -1,0 +1,19 @@
+#!/bin/sh
+# Non-blocking local test runner.
+# Runs before every commit but does not block it.
+# Activate with: git config core.hooksPath .githooks
+
+echo "=== Running tests (non-blocking) ==="
+make test 2>&1
+status=$?
+if [ $status -eq 0 ]; then
+  echo "=== All tests passed ==="
+else
+  echo "============================================="
+  echo "  WARNING: Some tests FAILED (exit code $status)"
+  echo "  Commit will proceed, but review the output"
+  echo "============================================="
+fi
+echo "(pausing for 3 seconds...)"
+sleep 3
+exit 0

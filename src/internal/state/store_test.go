@@ -1,25 +1,31 @@
-package store
+package state
 
 import (
 	"testing"
 	"time"
+
+	"ttl-allow-service/src/internal/config"
+	"ttl-allow-service/src/internal/ratelimit"
 )
 
-// resetTestState resets all global state for testing
-func resetTestState() {
-	ips = make(map[string]*IP)
-	rateLimiter = make(map[string][]time.Time)
-	PermanentKeys = make(map[string]string)
-	PermanentKeyIPs = make(map[string]map[string]bool)
-	PermanentKeyAuthTTL = 4 * time.Hour
-	PermanentKeyMaxIPs = 1
-	RequestTTLMinutes = 5
-	RateLimitWindowSec = 60
-	RateLimitMaxRequests = 20
-	MaxTTL = 48 * time.Hour
+func setTestConfig(keys []config.KeyEntry, maxIPs int) {
+	cfg := config.LoadDefaults()
+	cfg.Keys.Entries = keys
+	if maxIPs >= 0 {
+		cfg.Keys.MaxIPs = maxIPs
+	}
+	cfg.AfterLoad()
+	config.Set(cfg)
 }
 
-// createPendingIP creates an IP in Pending state
+func resetTestState() {
+	ips = make(map[string]*IP)
+	keyIPs = make(map[string]map[string]bool)
+	knockLimiter = ratelimit.New(time.Minute, 20)
+	authLimiter = ratelimit.New(time.Minute, 1000)
+	config.Set(config.LoadDefaults())
+}
+
 func createPendingIP(ipStr string, expiresIn time.Duration) *IP {
 	ip := &IP{ip: ipStr}
 	timer := time.AfterFunc(expiresIn, func() {})
@@ -28,11 +34,10 @@ func createPendingIP(ipStr string, expiresIn time.Duration) *IP {
 	return ip
 }
 
-// createAllowedIPManual creates an IP in Allowed state with ManualApproval
 func createAllowedIPManual(ipStr string, expiresIn time.Duration) *IP {
 	ip := createPendingIP(ipStr, expiresIn)
 	approval := &ManualApproval{
-		ExpiresAt: time.Now().Add(expiresIn),
+		ExpiresAt:  time.Now().Add(expiresIn),
 		ApprovedAt: time.Now(),
 	}
 	timer := time.AfterFunc(expiresIn, func() {})
@@ -41,29 +46,27 @@ func createAllowedIPManual(ipStr string, expiresIn time.Duration) *IP {
 	return ip
 }
 
-// createAllowedIPAutomatic creates an IP in Allowed state with AutomaticApproval
 func createAllowedIPAutomatic(ipStr string, keyName string, expiresIn time.Duration) *IP {
 	ip := &IP{ip: ipStr}
 	ips[ipStr] = ip
 
 	approval := &AutomaticApproval{
-		ExpiresAt: time.Now().Add(expiresIn),
+		ExpiresAt:  time.Now().Add(expiresIn),
 		ApprovedAt: time.Now(),
 		KeyName:    keyName,
 	}
 	timer := time.AfterFunc(expiresIn, func() {})
 	approval.SetTimer(timer)
 
-	if PermanentKeyIPs[keyName] == nil {
-		PermanentKeyIPs[keyName] = make(map[string]bool)
+	if keyIPs[keyName] == nil {
+		keyIPs[keyName] = make(map[string]bool)
 	}
-	PermanentKeyIPs[keyName][ipStr] = true
+	keyIPs[keyName][ipStr] = true
 
 	ip.Approve(approval)
 	return ip
 }
 
-// createDoneIP creates an IP in Done state
 func createDoneIP(ipStr string, reason DoneReason) *IP {
 	ip := &IP{ip: ipStr}
 	ips[ipStr] = ip
@@ -71,7 +74,6 @@ func createDoneIP(ipStr string, reason DoneReason) *IP {
 	return ip
 }
 
-// Test: AddKnockRequest success
 func TestAddKnockRequest_Success(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
@@ -90,7 +92,6 @@ func TestAddKnockRequest_Success(t *testing.T) {
 	}
 }
 
-// Test: AddKnockRequest duplicate
 func TestAddKnockRequest_Duplicate(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
@@ -102,12 +103,10 @@ func TestAddKnockRequest_Duplicate(t *testing.T) {
 	}
 }
 
-// Test: AddKnockRequest after revoke (should succeed)
 func TestAddKnockRequest_AfterRevoke(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
 
-	// Create allowed IP and then revoke it
 	createAllowedIPManual("1.2.3.4", time.Hour)
 	RevokeIP("1.2.3.4")
 
@@ -122,7 +121,6 @@ func TestAddKnockRequest_AfterRevoke(t *testing.T) {
 	}
 }
 
-// Test: AddKnockRequest after deny (should fail)
 func TestAddKnockRequest_AfterDeny(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
@@ -136,7 +134,6 @@ func TestAddKnockRequest_AfterDeny(t *testing.T) {
 	}
 }
 
-// Test: ApproveIP success
 func TestApproveIP_Success(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
@@ -161,7 +158,6 @@ func TestApproveIP_Success(t *testing.T) {
 	}
 }
 
-// Test: ApproveIP invalid TTL
 func TestApproveIP_InvalidTTL(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
@@ -173,7 +169,6 @@ func TestApproveIP_InvalidTTL(t *testing.T) {
 	}
 }
 
-// Test: ApproveIP no pending request
 func TestApproveIP_NoPending(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
@@ -184,7 +179,6 @@ func TestApproveIP_NoPending(t *testing.T) {
 	}
 }
 
-// Test: DenyIP success
 func TestDenyIP_Success(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
@@ -205,7 +199,6 @@ func TestDenyIP_Success(t *testing.T) {
 	}
 }
 
-// Test: DenyIP not pending
 func TestDenyIP_NotPending(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
@@ -216,7 +209,6 @@ func TestDenyIP_NotPending(t *testing.T) {
 	}
 }
 
-// Test: RevokeIP success
 func TestRevokeIP_Success(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
@@ -237,7 +229,6 @@ func TestRevokeIP_Success(t *testing.T) {
 	}
 }
 
-// Test: RevokeIP not allowed
 func TestRevokeIP_NotAllowed(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
@@ -248,7 +239,6 @@ func TestRevokeIP_NotAllowed(t *testing.T) {
 	}
 }
 
-// Test: CheckIPAllowed allowed IP
 func TestCheckIPAllowed_AllowedIP(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
@@ -260,20 +250,17 @@ func TestCheckIPAllowed_AllowedIP(t *testing.T) {
 		t.Error("Expected IP to be allowed")
 	}
 
-	// Check LastSeen was updated
 	ip := ips["1.2.3.4"]
 	if ip.lastSeen.IsZero() {
 		t.Error("Expected LastSeen to be updated")
 	}
 }
 
-// Test: CheckIPAllowed expired
 func TestCheckIPAllowed_Expired(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
 
 	ip := createAllowedIPManual("1.2.3.4", time.Hour)
-	// Manually expire
 	if as, ok := ip.state.(*AllowedState); ok {
 		manual := as.approval.(*ManualApproval)
 		manual.ExpiresAt = time.Now().Add(-time.Hour)
@@ -285,7 +272,6 @@ func TestCheckIPAllowed_Expired(t *testing.T) {
 	}
 }
 
-// Test: CheckIPAllowed not in list
 func TestCheckIPAllowed_NotInList(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
@@ -296,14 +282,13 @@ func TestCheckIPAllowed_NotInList(t *testing.T) {
 	}
 }
 
-// Test: ApproveIPByKey success
 func TestApproveIPByKey_Success(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
 
-	PermanentKeys["abc123"] = "test-key"
+	setTestConfig([]config.KeyEntry{{Key: "abc123", Name: "test-key"}}, -1)
 
-	err := ApproveIPByKey("1.2.3.4", "abc123")
+	err := ApproveIPByKey("1.2.3.4", "test-key")
 	if err != nil {
 		t.Errorf("Expected key auth to succeed, got: %v", err)
 	}
@@ -322,31 +307,28 @@ func TestApproveIPByKey_Success(t *testing.T) {
 	}
 }
 
-// Test: ApproveIPByKey invalid key
-func TestApproveIPByKey_InvalidKey(t *testing.T) {
+func TestApproveIPByKey_AnyName(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
 
-	// Don't add the key to PermanentKeys
-	err := ApproveIPByKey("1.2.3.4", "nonexistent")
-	if err == nil {
-		t.Error("Expected error for invalid key")
+	err := ApproveIPByKey("1.2.3.4", "any-name")
+	if err != nil {
+		t.Errorf("Expected no error, got: %v", err)
+	}
+	if !CheckIPAllowed("1.2.3.4") {
+		t.Error("Expected IP to be allowed")
 	}
 }
 
-// Test: ApproveIPByKey IP rotation
 func TestApproveIPByKey_IPRotation(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
 
-	PermanentKeys["abc123"] = "test-key"
-	PermanentKeyMaxIPs = 1
+	setTestConfig([]config.KeyEntry{{Key: "abc123", Name: "test-key"}}, 1)
 
-	// First IP
-	ApproveIPByKey("1.2.3.4", "abc123")
+	ApproveIPByKey("1.2.3.4", "test-key")
 
-	// Second IP (should revoke first)
-	ApproveIPByKey("5.6.7.8", "abc123")
+	ApproveIPByKey("5.6.7.8", "test-key")
 
 	if CheckIPAllowed("1.2.3.4") {
 		t.Error("Expected first IP to be revoked")
@@ -356,7 +338,6 @@ func TestApproveIPByKey_IPRotation(t *testing.T) {
 	}
 }
 
-// Test: State transitions table-driven
 func TestStateTransitions(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -427,7 +408,7 @@ func TestStateTransitions(t *testing.T) {
 			action: func(ip string) error {
 				result := AddKnockRequest(ip)
 				if !result {
-					return nil // This is expected
+					return nil
 				}
 				return nil
 			},
@@ -479,43 +460,30 @@ func TestStateTransitions(t *testing.T) {
 	}
 }
 
-// Test: Rate limiting
 func TestCheckRateLimit(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
 
-	// First request - should pass
-	if !CheckRateLimit("1.2.3.4") {
-		t.Error("Expected first request to pass rate limit")
+	cfg := config.LoadDefaults()
+	cfg.Rate.KnockMaxRequests = 5
+	config.Set(cfg)
+
+	knockLimiter = ratelimit.New(
+		time.Duration(cfg.Rate.KnockWindowSec)*time.Second,
+		cfg.Rate.KnockMaxRequests,
+	)
+
+	for i := 1; i <= 5; i++ {
+		if !CheckRateLimit("1.2.3.4") {
+			t.Errorf("Expected request %d to pass rate limit", i)
+		}
 	}
 
-	// Second request - should pass
-	if !CheckRateLimit("1.2.3.4") {
-		t.Error("Expected second request to pass rate limit")
-	}
-
-	// Third request - should pass (limit is 5)
-	if !CheckRateLimit("1.2.3.4") {
-		t.Error("Expected third request to pass rate limit")
-	}
-
-	// Fourth request - should pass (limit is 5)
-	if !CheckRateLimit("1.2.3.4") {
-		t.Error("Expected fourth request to pass rate limit")
-	}
-
-	// Fifth request - should pass (limit is 5)
-	if !CheckRateLimit("1.2.3.4") {
-		t.Error("Expected fifth request to pass rate limit")
-	}
-
-	// Sixth request - should fail
 	if CheckRateLimit("1.2.3.4") {
 		t.Error("Expected sixth request to fail rate limit")
 	}
 }
 
-// Test: GetPendingRequests
 func TestGetPendingRequests(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
@@ -529,7 +497,6 @@ func TestGetPendingRequests(t *testing.T) {
 	}
 }
 
-// Test: GetApprovedIPs
 func TestGetApprovedIPs(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
@@ -546,40 +513,34 @@ func TestGetApprovedIPs(t *testing.T) {
 	}
 }
 
-// Test: CanRequest logic
 func TestCanRequest(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
 
-	// New IP (no state) - can request
 	ip := &IP{ip: "1.2.3.4"}
 	ips["1.2.3.4"] = ip
 	if !ip.CanRequest() {
 		t.Error("Expected new IP to be able to request")
 	}
 
-	// Reset and test pending
 	resetTestState()
 	ip = createPendingIP("1.2.3.4", time.Hour)
 	if ip.CanRequest() {
 		t.Error("Expected pending IP to not be able to request")
 	}
 
-	// Reset and test allowed
 	resetTestState()
 	ip = createAllowedIPManual("1.2.3.4", time.Hour)
 	if ip.CanRequest() {
 		t.Error("Expected allowed IP to not be able to request")
 	}
 
-	// Reset and test done (denied)
 	resetTestState()
 	ip = createDoneIP("1.2.3.4", DoneDenied)
 	if ip.CanRequest() {
 		t.Error("Expected denied IP to not be able to request")
 	}
 
-	// Reset and test done (revoked)
 	resetTestState()
 	ip = createDoneIP("1.2.3.4", DoneManualRevoke)
 	if !ip.CanRequest() {
@@ -587,7 +548,6 @@ func TestCanRequest(t *testing.T) {
 	}
 }
 
-// Test: Timeout pending
 func TestTimeout_Pending(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
@@ -604,7 +564,6 @@ func TestTimeout_Pending(t *testing.T) {
 	}
 }
 
-// Test: Timeout allowed
 func TestTimeout_Allowed(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
@@ -621,18 +580,15 @@ func TestTimeout_Allowed(t *testing.T) {
 	}
 }
 
-// Test: CleanupExpired
 func TestCleanupExpired(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
 
-	// Create expired pending IP
 	ip1 := createPendingIP("1.2.3.4", time.Hour)
 	if ps, ok := ip1.state.(*PendingState); ok {
 		ps.ExpiresAt = time.Now().Add(-time.Hour)
 	}
 
-	// Create expired allowed IP
 	ip2 := createAllowedIPManual("5.6.7.8", time.Hour)
 	if as, ok := ip2.state.(*AllowedState); ok {
 		if manual, ok := as.approval.(*ManualApproval); ok {
@@ -640,60 +596,200 @@ func TestCleanupExpired(t *testing.T) {
 		}
 	}
 
-	// Add rate limiter entry with only expired timestamps
-	rateLimiter["9.10.11.12"] = []time.Time{
-		time.Now().Add(-time.Hour * 2), // expired
-		time.Now().Add(-time.Hour * 3), // expired
-	}
-
 	CleanupExpired()
 
-	// Check pending IP is now Done
 	if ds, ok := ip1.state.(*DoneState); !ok || ds.Reason != DoneAutoRevoke {
 		t.Error("Expected pending IP to be timed out")
 	}
 
-	// Check allowed IP is now Done
 	if ds, ok := ip2.state.(*DoneState); !ok || ds.Reason != DoneAutoRevoke {
 		t.Error("Expected allowed IP to be timed out")
 	}
+}
 
-	// Check rate limiter cleaned up (all timestamps expired)
-	if _, exists := rateLimiter["9.10.11.12"]; exists {
-		t.Error("Expected rate limiter entry to be cleaned up")
+func TestCheckAuthRateLimit(t *testing.T) {
+	resetTestState()
+	defer resetTestState()
+
+	cfg := config.LoadDefaults()
+	cfg.Rate.AuthMaxRequests = 3
+	config.Set(cfg)
+
+	authLimiter = ratelimit.New(
+		time.Duration(cfg.Rate.AuthWindowSec)*time.Second,
+		cfg.Rate.AuthMaxRequests,
+	)
+
+	for i := 1; i <= 3; i++ {
+		if !CheckAuthRateLimit("1.2.3.4") {
+			t.Errorf("Expected request %d to pass auth rate limit", i)
+		}
+	}
+
+	if CheckAuthRateLimit("1.2.3.4") {
+		t.Error("Expected fourth request to fail auth rate limit")
+	}
+
+	if !CheckAuthRateLimit("9.9.9.9") {
+		t.Error("Expected different IP to pass")
 	}
 }
 
-// Test: CleanupExpired preserves non-expired entries
+func TestGetIPAuthStatus_NotExists(t *testing.T) {
+	resetTestState()
+	defer resetTestState()
+
+	status := GetIPAuthStatus("1.2.3.4")
+	if status.Authorized {
+		t.Error("Expected not authorized for unknown IP")
+	}
+}
+
+func TestGetIPAuthStatus_AuthorizedManual(t *testing.T) {
+	resetTestState()
+	defer resetTestState()
+
+	createAllowedIPManual("1.2.3.4", time.Hour)
+
+	status := GetIPAuthStatus("1.2.3.4")
+	if !status.Authorized {
+		t.Error("Expected authorized")
+	}
+	if status.ApprovalType != "Manual" {
+		t.Errorf("Expected Manual, got %s", status.ApprovalType)
+	}
+	if !status.ExpiresAt.After(time.Now()) {
+		t.Error("Expected ExpiresAt in the future")
+	}
+}
+
+func TestGetIPAuthStatus_AuthorizedAutomatic(t *testing.T) {
+	resetTestState()
+	defer resetTestState()
+
+	createAllowedIPAutomatic("1.2.3.4", "test-key", time.Hour)
+
+	status := GetIPAuthStatus("1.2.3.4")
+	if !status.Authorized {
+		t.Error("Expected authorized")
+	}
+	if status.KeyName != "test-key" {
+		t.Errorf("Expected key name 'test-key', got %s", status.KeyName)
+	}
+	if status.ApprovalType != "Automatic (test-key)" {
+		t.Errorf("Expected 'Automatic (test-key)', got %s", status.ApprovalType)
+	}
+}
+
+func TestGetIPAuthStatus_Expired(t *testing.T) {
+	resetTestState()
+	defer resetTestState()
+
+	ip := createAllowedIPManual("1.2.3.4", -time.Hour)
+
+	status := GetIPAuthStatus("1.2.3.4")
+	if status.Authorized {
+		t.Error("Expected not authorized for expired IP")
+	}
+	_ = ip
+}
+
+func TestRevokeIPByKey_Success(t *testing.T) {
+	resetTestState()
+	defer resetTestState()
+
+	setTestConfig([]config.KeyEntry{{Key: "k", Name: "n"}}, -1)
+	ApproveIPByKey("1.2.3.4", "test-key")
+
+	if !CheckIPAllowed("1.2.3.4") {
+		t.Fatal("Expected IP to be allowed before revoke")
+	}
+
+	err := RevokeIPByKey("1.2.3.4", "test-key")
+	if err != nil {
+		t.Errorf("Expected revoke to succeed, got: %v", err)
+	}
+
+	if CheckIPAllowed("1.2.3.4") {
+		t.Error("Expected IP to not be allowed after revoke")
+	}
+}
+
+func TestRevokeIPByKey_NotExists(t *testing.T) {
+	resetTestState()
+	defer resetTestState()
+
+	err := RevokeIPByKey("1.2.3.4", "test-key")
+	if err == nil {
+		t.Error("Expected error for IP not in map")
+	}
+}
+
+func TestRevokeIPByKey_NotAllowed(t *testing.T) {
+	resetTestState()
+	defer resetTestState()
+
+	AddKnockRequest("1.2.3.4")
+
+	err := RevokeIPByKey("1.2.3.4", "test-key")
+	if err == nil {
+		t.Error("Expected error for IP in Pending state")
+	}
+}
+
+func TestLookupKey_Wrapper(t *testing.T) {
+	resetTestState()
+	defer resetTestState()
+
+	setTestConfig([]config.KeyEntry{{Key: "mykey", Name: "myname"}}, -1)
+
+	result, ok := LookupKey("mykey")
+	if !ok {
+		t.Error("expected ok=true")
+	}
+	if result != "myname" {
+		t.Errorf("expected 'myname', got %q", result)
+	}
+
+	result, ok = LookupKey("nonexistent")
+	if ok {
+		t.Error("expected ok=false")
+	}
+	if result != "" {
+		t.Errorf("expected empty for unknown key, got %q", result)
+	}
+}
+
+func TestHasPermanentKeys_Wrapper(t *testing.T) {
+	resetTestState()
+	defer resetTestState()
+
+	if HasPermanentKeys() {
+		t.Error("expected false with no keys")
+	}
+
+	setTestConfig([]config.KeyEntry{{Key: "k", Name: "n"}}, -1)
+
+	if !HasPermanentKeys() {
+		t.Error("expected true with keys")
+	}
+}
+
 func TestCleanupExpired_PreservesValid(t *testing.T) {
 	resetTestState()
 	defer resetTestState()
 
-	// Create non-expired pending IP
 	createPendingIP("1.2.3.4", time.Hour)
 
-	// Create non-expired allowed IP
 	createAllowedIPManual("5.6.7.8", time.Hour)
-
-	// Add rate limiter entry with valid timestamp
-	rateLimiter["9.10.11.12"] = []time.Time{
-		time.Now(), // valid
-	}
 
 	CleanupExpired()
 
-	// Check pending IP is still pending
 	if _, ok := ips["1.2.3.4"].state.(*PendingState); !ok {
 		t.Error("Expected pending IP to remain")
 	}
 
-	// Check allowed IP is still allowed
 	if _, ok := ips["5.6.7.8"].state.(*AllowedState); !ok {
 		t.Error("Expected allowed IP to remain")
-	}
-
-	// Check rate limiter preserved
-	if _, exists := rateLimiter["9.10.11.12"]; !exists {
-		t.Error("Expected rate limiter entry to be preserved")
 	}
 }

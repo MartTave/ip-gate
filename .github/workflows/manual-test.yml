@@ -1,0 +1,23 @@
+name: Manual Fork PR Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to test"
+        required: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ inputs.pr_number }}/head
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./... -count=1 -race -shuffle=on

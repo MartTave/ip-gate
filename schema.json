@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://ttl-witelist.example/schema.json",
+  "title": "TTL Whitelist Config",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 8080,
+          "description": "HTTP server port"
+        }
+      }
+    },
+    "rate_limiting": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "knock_window_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 60,
+          "description": "Rate limit window in seconds for /knock and PWA endpoints"
+        },
+        "knock_max_requests": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 20,
+          "description": "Max requests per window per IP for /knock and PWA"
+        },
+        "auth_window_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 60,
+          "description": "Rate limit window in seconds for /auth endpoint"
+        },
+        "auth_max_requests": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1000,
+          "description": "Max requests per window per IP for /auth endpoint"
+        }
+      }
+    },
+    "ttl": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "request_ttl_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5,
+          "description": "How long knock requests stay pending (minutes)"
+        },
+        "max_ttl": {
+          "type": "string",
+          "pattern": "^\\d+[smh]$",
+          "default": "48h",
+          "description": "Maximum allowed TTL for approvals (Go duration, e.g. 48h, 2h, 30m)"
+        }
+      }
+    },
+    "permanent_keys": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "name"],
+            "properties": {
+              "key": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The permanent key value"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Human-readable name for this key"
+              }
+            }
+          }
+        },
+        "auth_ttl": {
+          "type": "string",
+          "pattern": "^\\d+[smh]$",
+          "default": "4h",
+          "description": "TTL for key-authenticated approvals (Go duration)"
+        },
+        "max_ips": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1,
+          "description": "Max IPs allowed per permanent key (0 = unlimited)"
+        }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "default": "",
+          "description": "Path to log file (empty = stdout only)"
+        },
+        "max_size_mb": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 10,
+          "description": "Max MB per log file before rotation"
+        },
+        "max_age_days": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 7,
+          "description": "Delete rotated logs older than N days"
+        },
+        "max_files": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5,
+          "description": "Max rotated log files to keep"
+        }
+      }
+    },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "interval_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5,
+          "description": "Background cleanup worker interval (minutes)"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=../schema.json
+
+server:
+  port: 8080
+
+rate_limiting:
+  knock_window_sec: 60
+  knock_max_requests: 20
+  auth_window_sec: 60
+  auth_max_requests: 1000
+
+ttl:
+  request_ttl_minutes: 5
+  max_ttl: 48h
+
+permanent_keys:
+  entries:
+    - key: "your-64-char-key-here..."
+      name: "office-vpn"
+  auth_ttl: 4h
+  max_ips: 1
+
+logging:
+  file: ""
+  max_size_mb: 10
+  max_age_days: 7
+  max_files: 5
+
+worker:
+  interval_minutes: 5
