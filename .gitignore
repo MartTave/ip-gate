@@ -2,8 +2,6 @@
 ttl-allow-service
 
 # Go
-*.sum
-!go.sum
 vendor/
 
 # IDE

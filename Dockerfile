@@ -4,7 +4,7 @@ FROM golang:alpine AS builder
 WORKDIR /app
 
 # Copy go mod and source
-COPY go.mod .
+COPY go.mod go.sum ./
 COPY src/ ./src/
 
 # Build static binary
