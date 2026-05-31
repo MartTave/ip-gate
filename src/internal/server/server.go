@@ -34,6 +34,7 @@ func Start(configPath string) {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	logger.Info("config_loaded", "path", configPath)
 	state.Init(cfg)
 
 	logger.Info("starting_server")

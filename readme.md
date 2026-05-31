@@ -14,6 +14,45 @@ This service implements a "knock-to-request" pattern:
 
 All state is in-memory; restarts clear everything (fail-safe deny-by-default).
 
+## Configuration File
+
+The service can be configured via a YAML file, environment variables, or both. Environment variables override corresponding YAML values.
+
+The config file is located using the following order (first match wins):
+
+1. `--config <path>` CLI flag
+2. `CONFIG_FILE` environment variable
+3. `config.yaml` in the current working directory
+
+### Example
+
+```yaml
+# See example/config.yaml for a complete reference
+server:
+  port: 8080
+
+rate_limiting:
+  knock_window_sec: 60
+  knock_max_requests: 20
+  auth_window_sec: 60
+  auth_max_requests: 1000
+
+permanent_keys:
+  entries:
+    - key: "your-key-here"
+      name: "office-vpn"
+```
+
+### Docker
+
+Mount your config file into the container:
+
+```bash
+docker run -p 8080:8080 \
+  -v ./config.yaml:/app/config.yaml \
+  ttl-allow-service
+```
+
 ## Environment Variables
 
 | Variable | Description | Default |
