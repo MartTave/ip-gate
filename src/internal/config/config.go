@@ -61,8 +61,9 @@ type TTLConfig struct {
 }
 
 type KeyEntry struct {
-	Key  string `yaml:"key"`
-	Name string `yaml:"name"`
+	Key     string   `yaml:"key"`
+	Name    string   `yaml:"name"`
+	AuthTTL Duration `yaml:"auth_ttl,omitempty"`
 }
 
 type KeysConfig struct {
@@ -70,6 +71,7 @@ type KeysConfig struct {
 	AuthTTL Duration   `yaml:"auth_ttl"`
 	MaxIPs  int        `yaml:"max_ips"`
 	keyMap  map[string]string
+	nameTTL map[string]Duration
 }
 
 type LogConfig struct {
@@ -121,6 +123,14 @@ func (c *Config) HasPermanentKeys() bool {
 func (c *Config) LookupKey(key string) (string, bool) {
 	name, ok := c.Keys.keyMap[key]
 	return name, ok
+}
+
+// KeyAuthTTL returns the per-key TTL for name if set, otherwise the global auth_ttl.
+func (c *Config) KeyAuthTTL(name string) Duration {
+	if ttl, ok := c.Keys.nameTTL[name]; ok && ttl > 0 {
+		return ttl
+	}
+	return c.Keys.AuthTTL
 }
 
 func Load(path string) (*Config, error) {
@@ -363,6 +373,9 @@ func Validate(cfg *Config) error {
 		if e.Name == "" {
 			return fmt.Errorf("permanent_keys.entries: name must not be empty")
 		}
+		if e.AuthTTL < 0 {
+			return fmt.Errorf("permanent_keys.entries: auth_ttl for %s must be >= 0", e.Name)
+		}
 		if seen[e.Key] {
 			return fmt.Errorf("permanent_keys.entries: duplicate key: %s", e.Key)
 		}
@@ -378,7 +391,11 @@ func Validate(cfg *Config) error {
 
 func (c *Config) AfterLoad() {
 	c.Keys.keyMap = make(map[string]string, len(c.Keys.Entries))
+	c.Keys.nameTTL = make(map[string]Duration, len(c.Keys.Entries))
 	for _, e := range c.Keys.Entries {
 		c.Keys.keyMap[e.Key] = e.Name
+		if e.AuthTTL > 0 {
+			c.Keys.nameTTL[e.Name] = e.AuthTTL
+		}
 	}
 }

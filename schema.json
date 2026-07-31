@@ -86,6 +86,11 @@
                 "type": "string",
                 "minLength": 1,
                 "description": "Human-readable name for this key"
+              },
+              "auth_ttl": {
+                "type": "string",
+                "pattern": "^\\d+[smhd]$",
+                "description": "Optional per-key TTL override (Go duration, e.g. 30m, 4h, 30d). Defaults to permanent_keys.auth_ttl when unset"
               }
             }
           }

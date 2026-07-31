@@ -41,6 +41,8 @@ permanent_keys:
   entries:
     - key: "your-key-here"
       name: "office-vpn"
+      # auth_ttl: 30d  # optional per-key TTL override (YAML only)
+  auth_ttl: 4h
 ```
 
 ### Docker
@@ -72,6 +74,23 @@ docker run -p 8080:8080 \
 | `LOG_MAX_SIZE_MB` | Max MB per log file before rotation | `10` |
 | `LOG_MAX_AGE_DAYS` | Delete rotated logs older than N days | `7` |
 | `LOG_MAX_FILES` | Max rotated log files to keep | `5` |
+
+### Permanent Key TTL
+
+`permanent_keys.auth_ttl` is the global default TTL for key-authenticated approvals. Each key can override it with an optional per-key `auth_ttl` in the config file:
+
+```yaml
+permanent_keys:
+  auth_ttl: 4h
+  entries:
+    - key: "key-one"
+      name: "office-vpn"
+      auth_ttl: 30d
+    - key: "key-two"
+      name: "mobile"   # uses the global 4h
+```
+
+> **Environment variable limitation:** Per-key TTL is only configurable in the YAML config file. `PERMANENT_KEYS` only accepts `key:name` pairs, so all keys configured via the environment share the global `PERMANENT_KEY_AUTH_TTL`. This is intentional — environment variables are meant for quick and dirty deployments; use the config file when you need per-key control.
 
 ### TTL Options
 

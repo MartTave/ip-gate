@@ -336,6 +336,69 @@ permanent_keys:
 	}
 }
 
+func TestLoad_PerKeyAuthTTL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := []byte(`
+permanent_keys:
+  auth_ttl: 4h
+  entries:
+    - key: "key-a"
+      name: "alpha"
+      auth_ttl: 30d
+    - key: "key-b"
+      name: "beta"
+`)
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Keys.AuthTTL != Duration(4*time.Hour) {
+		t.Errorf("expected global 4h, got %v", cfg.Keys.AuthTTL)
+	}
+	if got := cfg.KeyAuthTTL("alpha"); got != Duration(30*24*time.Hour) {
+		t.Errorf("expected per-key 30d for alpha, got %v", got)
+	}
+	if got := cfg.KeyAuthTTL("beta"); got != Duration(4*time.Hour) {
+		t.Errorf("expected global 4h for beta, got %v", got)
+	}
+	if got := cfg.KeyAuthTTL("unknown"); got != Duration(4*time.Hour) {
+		t.Errorf("expected global 4h for unknown name, got %v", got)
+	}
+}
+
+func TestKeyAuthTTL(t *testing.T) {
+	cfg := LoadDefaults()
+	cfg.Keys.AuthTTL = Duration(time.Hour)
+	cfg.Keys.Entries = []KeyEntry{
+		{Key: "k1", Name: "n1", AuthTTL: Duration(2 * time.Hour)},
+		{Key: "k2", Name: "n2"},
+	}
+	cfg.AfterLoad()
+
+	if got := cfg.KeyAuthTTL("n1"); got != Duration(2*time.Hour) {
+		t.Errorf("expected per-key 2h, got %v", got)
+	}
+	if got := cfg.KeyAuthTTL("n2"); got != Duration(time.Hour) {
+		t.Errorf("expected global 1h, got %v", got)
+	}
+	if got := cfg.KeyAuthTTL("unknown"); got != Duration(time.Hour) {
+		t.Errorf("expected global 1h for unknown, got %v", got)
+	}
+}
+
+func TestValidate_KeyNegativeTTL(t *testing.T) {
+	cfg := LoadDefaults()
+	cfg.Keys.Entries = []KeyEntry{{Key: "abc", Name: "one", AuthTTL: Duration(-time.Hour)}}
+	if err := Validate(cfg); err == nil {
+		t.Error("expected error for negative per-key auth_ttl")
+	}
+}
+
 func TestHasPermanentKeys(t *testing.T) {
 	cfg := LoadDefaults()
 	cfg.AfterLoad()

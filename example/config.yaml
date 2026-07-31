@@ -17,6 +17,7 @@ permanent_keys:
   entries:
     - key: "your-64-char-key-here..."
       name: "office-vpn"
+      # auth_ttl: 30d # optional per-key override of permanent_keys.auth_ttl (YAML only)
   auth_ttl: 4h # supports days too, e.g. 30d
   max_ips: 1
 

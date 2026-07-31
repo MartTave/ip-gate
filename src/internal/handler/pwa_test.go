@@ -150,6 +150,39 @@ func TestPWAAuthHandler_ValidKey(t *testing.T) {
 	}
 }
 
+func TestPWAAuthHandler_PerKeyTTL(t *testing.T) {
+	state.ResetTestState()
+	cfg := config.LoadDefaults()
+	cfg.Keys.Entries = []config.KeyEntry{{Key: "valid-key-123", Name: "test-key", AuthTTL: config.Duration(2 * time.Hour)}}
+	cfg.Keys.MaxIPs = 5
+	cfg.Keys.AuthTTL = config.Duration(time.Hour)
+	cfg.AfterLoad()
+	state.Init(cfg)
+
+	body := strings.NewReader("key=valid-key-123")
+	req := httptest.NewRequest("POST", "/pwa/auth", body)
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	PWAAuthHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode JSON: %v", err)
+	}
+	secs, ok := resp["expires_in_seconds"].(float64)
+	if !ok {
+		t.Fatalf("expected expires_in_seconds, got %v", resp["expires_in_seconds"])
+	}
+	if secs > 2*3600 || secs < 2*3600-10 {
+		t.Errorf("expected ~2h per-key TTL, got %v seconds", secs)
+	}
+}
+
 func TestPWAAuthHandler_InvalidKey(t *testing.T) {
 	setupPWAKeys(t)
 	body := strings.NewReader("key=bad-key")

@@ -211,7 +211,7 @@ func ApproveIPByKey(ipStr string, keyName string) error {
 	defer mu.Unlock()
 
 	maxIPs := config.Get().Keys.MaxIPs
-	authTTL := time.Duration(config.Get().Keys.AuthTTL)
+	authTTL := time.Duration(config.Get().KeyAuthTTL(keyName))
 	if trackedIPs, exists := keyIPs[keyName]; exists && len(trackedIPs) >= maxIPs {
 		var oldestIP *IP
 		var oldestIPStr string
