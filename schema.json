@@ -92,9 +92,9 @@
         },
         "auth_ttl": {
           "type": "string",
-          "pattern": "^\\d+[smh]$",
+          "pattern": "^\\d+[smhd]$",
           "default": "4h",
-          "description": "TTL for key-authenticated approvals (Go duration)"
+          "description": "TTL for key-authenticated approvals (Go duration, e.g. 30m, 4h, 30d)"
         },
         "max_ips": {
           "type": "integer",

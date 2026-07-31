@@ -11,6 +11,39 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Duration is a time.Duration that also accepts a "d" (days) suffix, e.g. "30d".
+type Duration time.Duration
+
+func (d *Duration) UnmarshalText(data []byte) error {
+	v, err := ParseDuration(string(data))
+	if err != nil {
+		return err
+	}
+	*d = Duration(v)
+	return nil
+}
+
+func (d Duration) MarshalText() ([]byte, error) {
+	return []byte(time.Duration(d).String()), nil
+}
+
+// ParseDuration parses a duration string. It supports Go's native units
+// (ns, us, ms, s, m, h) plus a "d" (days) suffix, e.g. "30d".
+func ParseDuration(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty duration")
+	}
+	if strings.HasSuffix(s, "d") {
+		n, err := strconv.ParseInt(strings.TrimSuffix(s, "d"), 10, 64)
+		if err != nil || n <= 0 {
+			return 0, fmt.Errorf("invalid duration %q", s)
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(s)
+}
+
 type ServerConfig struct {
 	Port int `yaml:"port"`
 }
@@ -33,9 +66,9 @@ type KeyEntry struct {
 }
 
 type KeysConfig struct {
-	Entries []KeyEntry     `yaml:"entries"`
-	AuthTTL time.Duration  `yaml:"auth_ttl"`
-	MaxIPs  int            `yaml:"max_ips"`
+	Entries []KeyEntry `yaml:"entries"`
+	AuthTTL Duration   `yaml:"auth_ttl"`
+	MaxIPs  int        `yaml:"max_ips"`
 	keyMap  map[string]string
 }
 
@@ -132,7 +165,7 @@ func LoadDefaults() *Config {
 			MaxTTL:            48 * time.Hour,
 		},
 		Keys: KeysConfig{
-			AuthTTL: 4 * time.Hour,
+			AuthTTL: Duration(4 * time.Hour),
 			MaxIPs:  1,
 		},
 		Logging: LogConfig{
@@ -169,7 +202,7 @@ func ApplyDefaults(cfg *Config) {
 		cfg.TTL.MaxTTL = 48 * time.Hour
 	}
 	if cfg.Keys.AuthTTL == 0 {
-		cfg.Keys.AuthTTL = 4 * time.Hour
+		cfg.Keys.AuthTTL = Duration(4 * time.Hour)
 	}
 	if cfg.Keys.MaxIPs == 0 {
 		cfg.Keys.MaxIPs = 1
@@ -229,8 +262,8 @@ func ApplyEnvOverrides(cfg *Config) {
 	}
 
 	if v := os.Getenv("PERMANENT_KEY_AUTH_TTL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Keys.AuthTTL = d
+		if d, err := ParseDuration(v); err == nil {
+			cfg.Keys.AuthTTL = Duration(d)
 		}
 	}
 	if v := os.Getenv("PERMANENT_KEY_MAX_IPS"); v != "" {

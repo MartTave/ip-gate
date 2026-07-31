@@ -66,7 +66,7 @@ docker run -p 8080:8080 \
 | `PORT` | HTTP server port | `8080` |
 | `WORKER_INTERVAL_MINUTES` | Background cleanup worker interval | `5` |
 | `PERMANENT_KEYS` | Comma-separated `key:name` pairs for key-based auth | (empty) |
-| `PERMANENT_KEY_AUTH_TTL` | TTL for key-authenticated approvals | `4h` |
+| `PERMANENT_KEY_AUTH_TTL` | TTL for key-authenticated approvals (supports `d` days, e.g. `30d`) | `4h` |
 | `PERMANENT_KEY_MAX_IPS` | Max IPs allowed per permanent key (0=unlimited) | `1` |
 | `LOG_FILE` | Path to log file (empty = stdout only) | (empty) |
 | `LOG_MAX_SIZE_MB` | Max MB per log file before rotation | `10` |

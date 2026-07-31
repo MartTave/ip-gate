@@ -25,7 +25,7 @@ func setupIntegration(t *testing.T, opts ...func(*config.Config)) (*httptest.Ser
 	cfg.Rate.AuthWindowSec = 60
 	cfg.TTL.RequestTTLMinutes = 5
 	cfg.TTL.MaxTTL = 48 * time.Hour
-	cfg.Keys.AuthTTL = 4 * time.Hour
+	cfg.Keys.AuthTTL = config.Duration(4 * time.Hour)
 	cfg.Keys.MaxIPs = 5
 	for _, opt := range opts {
 		opt(cfg)
@@ -59,7 +59,7 @@ func withKeys(entries []config.KeyEntry, maxIPs int) func(*config.Config) {
 	return func(cfg *config.Config) {
 		cfg.Keys.Entries = entries
 		cfg.Keys.MaxIPs = maxIPs
-		cfg.Keys.AuthTTL = time.Hour
+		cfg.Keys.AuthTTL = config.Duration(time.Hour)
 	}
 }
 

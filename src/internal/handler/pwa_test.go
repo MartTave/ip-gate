@@ -38,7 +38,7 @@ func setupPWAKeys(t *testing.T) {
 	cfg := config.LoadDefaults()
 	cfg.Keys.Entries = []config.KeyEntry{{Key: "valid-key-123", Name: "test-key"}}
 	cfg.Keys.MaxIPs = 5
-	cfg.Keys.AuthTTL = time.Hour
+	cfg.Keys.AuthTTL = config.Duration(time.Hour)
 	cfg.AfterLoad()
 	state.Init(cfg)
 }

@@ -25,7 +25,7 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.TTL.MaxTTL != 48*time.Hour {
 		t.Errorf("expected 48h, got %v", cfg.TTL.MaxTTL)
 	}
-	if cfg.Keys.AuthTTL != 4*time.Hour {
+	if cfg.Keys.AuthTTL != Duration(4*time.Hour) {
 		t.Errorf("expected 4h, got %v", cfg.Keys.AuthTTL)
 	}
 	if cfg.Keys.MaxIPs != 1 {
@@ -272,6 +272,67 @@ func TestLoad_InvalidYAML(t *testing.T) {
 	}
 	if _, err := Load(path); err == nil {
 		t.Error("expected error for invalid YAML")
+	}
+}
+
+func TestParseDuration(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    time.Duration
+		wantErr bool
+	}{
+		{"30d", 30 * 24 * time.Hour, false},
+		{"1d", 24 * time.Hour, false},
+		{"4h", 4 * time.Hour, false},
+		{"90m", 90 * time.Minute, false},
+		{"30s", 30 * time.Second, false},
+		{" 2d ", 2 * 24 * time.Hour, false},
+		{"0d", 0, true},
+		{"-1d", 0, true},
+		{"dd", 0, true},
+		{"1", 0, true},
+		{"", 0, true},
+		{"abc", 0, true},
+		{"1d12h", 0, true},
+	}
+	for _, tt := range tests {
+		got, err := ParseDuration(tt.input)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("ParseDuration(%q): expected error, got %v", tt.input, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseDuration(%q): unexpected error: %v", tt.input, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("ParseDuration(%q): expected %v, got %v", tt.input, tt.want, got)
+		}
+	}
+}
+
+func TestLoad_AuthTTLInDays(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := []byte(`
+permanent_keys:
+  entries:
+    - key: "test-key"
+      name: "test-name"
+  auth_ttl: 30d
+`)
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Keys.AuthTTL != Duration(30*24*time.Hour) {
+		t.Errorf("expected 30d, got %v", cfg.Keys.AuthTTL)
 	}
 }
 
