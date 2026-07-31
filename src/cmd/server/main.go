@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"os"
+	_ "time/tzdata"
 
 	"ttl-allow-service/src/internal/server"
 )
